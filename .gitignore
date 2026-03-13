@@ -1,0 +1,77 @@
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project Specific
+vector_store/          # FAISS index (large files)
+File_PDFs/*.pdf       # PDF files (may be sensitive)
+OCR/tesseract.exe     # Binary executable
+OCR/tessdata/*.traineddata  # Language models (large files)
+
+# Temporary files
+*.tmp
+*.log
+*.cache
+.pytest_cache/
+
+# MLOps artifacts
+artifacts/
+
+# Model cache
+.cache/
+models/
+sentence-transformers/
+
+# Data files
+*.csv
+*.xlsx
+*.db
+*.sqlite
+
+# API Keys and Secrets
+*.key
+*.pem
+secrets.json
+credentials.json
