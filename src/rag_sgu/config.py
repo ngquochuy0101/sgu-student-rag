@@ -54,8 +54,16 @@ class RAGSettings:
     ocr_dpi: int
     ocr_psm: int
     ocr_oem: int
+    ocr_preprocessing_enabled: bool
+    ocr_adaptive_threshold: bool
+    ocr_denoise: bool
+    ocr_deskew: bool
+    ocr_vietnamese_correction: bool
+    ocr_correction_aggressive: bool
+    ocr_confidence_threshold: float
     ocr_min_text_chars: int
     ocr_cache_enabled: bool
+    ocr_max_retry_attempts: int
 
     chunk_size: int
     chunk_overlap: int
@@ -147,8 +155,16 @@ def load_settings(base_dir: str | Path | None = None, env_file: str | Path | Non
         ocr_dpi=_env_int("OCR_DPI", 2),
         ocr_psm=_env_int("OCR_PSM", 3),
         ocr_oem=_env_int("OCR_OEM", 1),
+        ocr_preprocessing_enabled=_env_bool("OCR_PREPROCESSING_ENABLED", True),
+        ocr_adaptive_threshold=_env_bool("OCR_ADAPTIVE_THRESHOLD", True),
+        ocr_denoise=_env_bool("OCR_DENOISE", True),
+        ocr_deskew=_env_bool("OCR_DESKEW", True),
+        ocr_vietnamese_correction=_env_bool("OCR_VIETNAMESE_CORRECTION", True),
+        ocr_correction_aggressive=_env_bool("OCR_CORRECTION_AGGRESSIVE", False),
+        ocr_confidence_threshold=_env_float("OCR_CONFIDENCE_THRESHOLD", 0.60),
         ocr_min_text_chars=_env_int("OCR_MIN_TEXT_CHARS", 60),
         ocr_cache_enabled=_env_bool("OCR_CACHE_ENABLED", True),
+        ocr_max_retry_attempts=_env_int("OCR_MAX_RETRY_ATTEMPTS", 2),
         chunk_size=_env_int("CHUNK_SIZE", 1000),
         chunk_overlap=_env_int("CHUNK_OVERLAP", 200),
         separators=("\n\n", "\n", ". ", " ", ""),
@@ -157,7 +173,7 @@ def load_settings(base_dir: str | Path | None = None, env_file: str | Path | Non
             "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
         ),
         embedding_device=os.getenv("EMBEDDING_DEVICE", "cpu"),
-        retrieval_k=_env_int("RETRIEVAL_K", 4),
+        retrieval_k=_env_int("RETRIEVAL_K", 3),
         llm_model=os.getenv("LLM_MODEL", "gemini-2.5-flash"),
         llm_temperature=_env_float("LLM_TEMPERATURE", 0.2),
         llm_max_tokens=_env_int("LLM_MAX_TOKENS", 1024),

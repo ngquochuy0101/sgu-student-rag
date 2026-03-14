@@ -60,16 +60,31 @@ class TextChunker:
     def chunk_documents(self, documents: List[ExtractedDocument]) -> List[Document]:
         chunks: List[Document] = []
         for item in documents:
-            item_chunks = self.splitter.split_text(item.text)
-            for chunk_id, chunk in enumerate(item_chunks):
-                metadata = {
-                    "source": item.source_path.name,
-                    "source_path": str(item.source_path),
-                    "source_hash": item.source_hash,
-                    "chunk_id": chunk_id,
-                    "page_count": item.page_count,
-                    "ocr_pages": item.ocr_pages,
-                    "extraction_method": item.extraction_method,
-                }
-                chunks.append(Document(page_content=chunk, metadata=metadata))
+            try:
+                source_relpath = str(item.source_path.resolve().relative_to(self.settings.base_dir))
+            except ValueError:
+                source_relpath = item.source_path.name
+
+            chunk_id = 0
+            page_texts = item.page_texts if item.page_texts else [item.text]
+
+            for page_number, page_text in enumerate(page_texts, start=1):
+                if not page_text.strip():
+                    continue
+                item_chunks = self.splitter.split_text(page_text)
+                for page_chunk_id, chunk in enumerate(item_chunks):
+                    metadata = {
+                        "source": item.source_path.name,
+                        "source_relpath": source_relpath,
+                        "source_path": str(item.source_path),
+                        "source_hash": item.source_hash,
+                        "chunk_id": chunk_id,
+                        "page_chunk_id": page_chunk_id,
+                        "page_number": page_number,
+                        "page_count": item.page_count,
+                        "ocr_pages": item.ocr_pages,
+                        "extraction_method": item.extraction_method,
+                    }
+                    chunks.append(Document(page_content=chunk, metadata=metadata))
+                    chunk_id += 1
         return chunks

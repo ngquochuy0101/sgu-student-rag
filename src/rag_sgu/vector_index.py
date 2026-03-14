@@ -1,12 +1,44 @@
 from __future__ import annotations
 
+import os
+import warnings
 from typing import Any, List
 
+# Keep embedding runtime on PyTorch path and avoid TensorFlow/protobuf ABI issues.
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+os.environ.setdefault("TRANSFORMERS_NO_FLAX", "1")
+os.environ.setdefault("USE_TORCH", "1")
+
 try:
-    from langchain_community.embeddings import HuggingFaceEmbeddings  # type: ignore[import-not-found]
+    from langchain_huggingface import HuggingFaceEmbeddings  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover
+    try:
+        from langchain_community.embeddings import HuggingFaceEmbeddings  # type: ignore[import-not-found]
+
+        try:
+            from langchain_core._api.deprecation import (  # type: ignore[import-not-found]
+                LangChainDeprecationWarning,
+            )
+
+            warnings.filterwarnings(
+                "ignore",
+                message=r"The class `HuggingFaceEmbeddings` was deprecated.*",
+                category=LangChainDeprecationWarning,
+            )
+        except ImportError:
+            warnings.filterwarnings(
+                "ignore",
+                message=r"The class `HuggingFaceEmbeddings` was deprecated.*",
+                category=Warning,
+            )
+    except ImportError:  # pragma: no cover
+        HuggingFaceEmbeddings = None  # type: ignore[assignment]
+
+try:
     from langchain_community.vectorstores import FAISS  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover
-    HuggingFaceEmbeddings = None  # type: ignore[assignment]
     FAISS = None  # type: ignore[assignment]
 
 from .config import RAGSettings
@@ -27,11 +59,23 @@ class VectorIndexManager:
         if self._embeddings is None:
             self.logger.info("Loading embedding model: %s", self.settings.embedding_model)
             assert HuggingFaceEmbeddings is not None
-            self._embeddings = HuggingFaceEmbeddings(
-                model_name=self.settings.embedding_model,
-                model_kwargs={"device": self.settings.embedding_device},
-                encode_kwargs={"normalize_embeddings": True},
-            )
+            try:
+                self._embeddings = HuggingFaceEmbeddings(
+                    model_name=self.settings.embedding_model,
+                    model_kwargs={"device": self.settings.embedding_device},
+                    encode_kwargs={"normalize_embeddings": True},
+                )
+            except Exception as error:  # noqa: BLE001
+                message = str(error)
+                if (
+                    "Unable to convert function return value to a Python type" in message
+                    or "Descriptors cannot be created directly" in message
+                ):
+                    raise RuntimeError(
+                        "Embedding initialization failed because TensorFlow was loaded first. "
+                        "Set PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python, then restart the process and retry."
+                    ) from error
+                raise
         return self._embeddings
 
     def build(self, documents: List[Any]) -> Any:

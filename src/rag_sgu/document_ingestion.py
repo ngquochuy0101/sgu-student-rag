@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import unicodedata
 from pathlib import Path
@@ -22,18 +23,42 @@ try:
 except ImportError:  # pragma: no cover
     Image = None  # type: ignore[assignment]
 
+try:
+    import cv2  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover
+    cv2 = None  # type: ignore[assignment]
+
+try:
+    import numpy as np  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover
+    np = None  # type: ignore[assignment]
+
 from .config import RAGSettings
 from .mlops import hash_file
 from .schemas import ExtractedDocument
 
 
 class OCRProcessor:
+    _VIETNAMESE_CORRECTIONS: dict[str, str] = {
+        "ﬁ": "fi",
+        "ﬂ": "fl",
+        "−": "-",
+        "“": '"',
+        "”": '"',
+        "’": "'",
+    }
+
     def __init__(self, settings: RAGSettings):
         if fitz is None or pytesseract is None or Image is None:
             raise ImportError(
                 "OCR dependencies are missing. Install requirements.txt before ingestion."
             )
         self.settings = settings
+        self._preprocess_available = (
+            self.settings.ocr_preprocessing_enabled
+            and cv2 is not None
+            and np is not None
+        )
         self._configure_tesseract()
 
     def _configure_tesseract(self) -> None:
@@ -46,8 +71,6 @@ class OCRProcessor:
             tessdata_path = Path(self.settings.tessdata_prefix)
             if tessdata_path.exists():
                 # Tesseract expects this variable to point to the parent folder of tessdata files.
-                import os
-
                 os.environ["TESSDATA_PREFIX"] = str(tessdata_path) + os.sep
 
     @staticmethod
@@ -58,19 +81,151 @@ class OCRProcessor:
         text = re.sub(r"\s+", " ", text).strip()
         return text
 
+    def _detect_skew(self, gray_image: Any) -> float:
+        if cv2 is None or np is None:
+            return 0.0
+
+        edges = cv2.Canny(gray_image, 50, 150, apertureSize=3)
+        lines = cv2.HoughLines(edges, 1, np.pi / 180, 200)
+        if lines is None:
+            return 0.0
+
+        angles: list[float] = []
+        for rho, theta in lines[:, 0]:
+            _ = rho
+            angle = float(np.degrees(theta) - 90)
+            if -45 < angle < 45:
+                angles.append(angle)
+
+        if not angles:
+            return 0.0
+        return float(np.median(np.array(angles)))
+
+    def _rotate_image(self, image: Any, angle: float) -> Any:
+        if cv2 is None:
+            return image
+        if abs(angle) < 0.5:
+            return image
+
+        height, width = image.shape[:2]
+        center = (width // 2, height // 2)
+        matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        return cv2.warpAffine(
+            image,
+            matrix,
+            (width, height),
+            flags=cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+
+    def _preprocess_image(self, image: Any) -> Any:
+        if not self._preprocess_available:
+            return image
+
+        assert cv2 is not None
+        assert np is not None
+
+        image_array = np.array(image)
+        if len(image_array.shape) == 3:
+            gray = cv2.cvtColor(image_array, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = image_array
+
+        if self.settings.ocr_adaptive_threshold:
+            gray = cv2.adaptiveThreshold(
+                gray,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                11,
+                2,
+            )
+
+        if self.settings.ocr_denoise:
+            gray = cv2.fastNlMeansDenoising(gray, h=10)
+
+        if self.settings.ocr_deskew:
+            angle = self._detect_skew(gray)
+            if abs(angle) > 0.5:
+                gray = self._rotate_image(gray, angle)
+
+        return Image.fromarray(gray)
+
+    def _estimate_ocr_confidence(self, image: Any, config: str) -> float:
+        assert pytesseract is not None
+        try:
+            data = pytesseract.image_to_data(
+                image,
+                lang=self.settings.ocr_languages,
+                config=config,
+                output_type=pytesseract.Output.DICT,
+            )
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+        confidence_values = []
+        for value in data.get("conf", []):
+            value_str = str(value).strip()
+            if not value_str or value_str == "-1":
+                continue
+            try:
+                confidence_values.append(float(value_str))
+            except ValueError:
+                continue
+
+        if not confidence_values:
+            return 0.0
+        return sum(confidence_values) / (len(confidence_values) * 100.0)
+
+    def _postprocess_text(self, text: str) -> str:
+        cleaned = self.clean_text(text)
+        if not cleaned or not self.settings.ocr_vietnamese_correction:
+            return cleaned
+
+        for old, new in self._VIETNAMESE_CORRECTIONS.items():
+            cleaned = cleaned.replace(old, new)
+
+        if self.settings.ocr_correction_aggressive:
+            cleaned = re.sub(r"(?<=\w)- (?=\w)", "", cleaned)
+            cleaned = re.sub(r"([A-Za-zÀ-ỹ])\1{3,}", r"\1\1", cleaned)
+
+        return self.clean_text(cleaned)
+
     def _ocr_page(self, page: Any) -> str:
         assert fitz is not None
         assert Image is not None
         assert pytesseract is not None
+
         pix = page.get_pixmap(matrix=fitz.Matrix(self.settings.ocr_dpi, self.settings.ocr_dpi))
         image = Image.open(io.BytesIO(pix.tobytes("png")))
-        ocr_config = f"--psm {self.settings.ocr_psm} --oem {self.settings.ocr_oem}"
-        text = pytesseract.image_to_string(
-            image,
-            lang=self.settings.ocr_languages,
-            config=ocr_config,
-        )
-        return self.clean_text(text)
+        processed_image = self._preprocess_image(image)
+        base_config = f"--psm {self.settings.ocr_psm} --oem {self.settings.ocr_oem}"
+
+        max_attempts = max(1, self.settings.ocr_max_retry_attempts)
+        best_text = ""
+        best_confidence = 0.0
+
+        for attempt in range(max_attempts):
+            attempt_config = base_config
+            if attempt > 0 and self.settings.ocr_psm != 6:
+                attempt_config = f"--psm 6 --oem {self.settings.ocr_oem}"
+
+            raw_text = pytesseract.image_to_string(
+                processed_image,
+                lang=self.settings.ocr_languages,
+                config=attempt_config,
+            )
+            candidate_text = self._postprocess_text(raw_text)
+            candidate_confidence = self._estimate_ocr_confidence(processed_image, attempt_config)
+
+            if candidate_confidence > best_confidence or not best_text:
+                best_text = candidate_text
+                best_confidence = candidate_confidence
+
+            if best_confidence >= self.settings.ocr_confidence_threshold:
+                break
+
+        return best_text
 
     def extract_pdf(self, pdf_path: Path) -> ExtractedDocument:
         assert fitz is not None
@@ -78,23 +233,23 @@ class OCRProcessor:
             raise FileNotFoundError(f"Missing PDF file: {pdf_path}")
 
         source_hash = hash_file(pdf_path)
-        text_parts: list[str] = []
+        page_texts: list[str] = []
         ocr_pages = 0
 
         with fitz.open(str(pdf_path)) as document:
             page_count = len(document)
             for page in document:
-                extracted = self.clean_text(page.get_text("text"))
+                extracted = self._postprocess_text(page.get_text("text"))
                 if len(extracted) >= self.settings.ocr_min_text_chars:
-                    text_parts.append(extracted)
+                    page_texts.append(extracted)
                     continue
 
                 ocr_text = self._ocr_page(page)
-                if ocr_text:
-                    text_parts.append(ocr_text)
+                page_texts.append(ocr_text)
                 ocr_pages += 1
 
-        full_text = self.clean_text("\n\n".join(text_parts))
+        non_empty_pages = [item for item in page_texts if item.strip()]
+        full_text = self._postprocess_text("\n\n".join(non_empty_pages))
         if ocr_pages and ocr_pages < page_count:
             extraction_method = "hybrid"
         elif ocr_pages == page_count:
@@ -109,6 +264,7 @@ class OCRProcessor:
             ocr_pages=ocr_pages,
             extraction_method=extraction_method,
             source_hash=source_hash,
+            page_texts=page_texts,
         )
 
 

@@ -68,13 +68,21 @@ RAG_OCR_DIR=OCR
 RAG_ARTIFACTS_DIR=artifacts
 CHUNK_SIZE=1000
 CHUNK_OVERLAP=200
-RETRIEVAL_K=4
+RETRIEVAL_K=3
 OCR_LANGUAGES=vie+eng
 OCR_DPI=2
 OCR_PSM=3
 OCR_OEM=1
+OCR_PREPROCESSING_ENABLED=true
+OCR_ADAPTIVE_THRESHOLD=true
+OCR_DENOISE=true
+OCR_DESKEW=true
+OCR_VIETNAMESE_CORRECTION=true
+OCR_CORRECTION_AGGRESSIVE=false
+OCR_CONFIDENCE_THRESHOLD=0.60
 OCR_MIN_TEXT_CHARS=60
 OCR_CACHE_ENABLED=true
+OCR_MAX_RETRY_ATTEMPTS=2
 ```
 
 ## CLI Usage
@@ -111,6 +119,46 @@ rag-sgu show-manifest
 ```
 
 Manifest is stored at `vector_store/manifest.json`.
+
+## Streamlit Web App
+
+Run the interactive QA web app:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+What the web app includes:
+
+- Token-streaming chat response with TTFT metrics
+- Rich Markdown/LaTeX rendering and interactive citation panel with PDF page jump
+- Auto-suggestion (query expansion) based on indexed content
+- Semantic cache with cosine similarity threshold (default 0.95)
+: Optional Redis backend if `WEB_SEMANTIC_CACHE_REDIS_URL` is set
+- Feedback loop (like/dislike) and JSONL tracing for production observability
+- Runtime cache reload and chat history reset
+
+Web app runs in QA-only mode:
+
+- No build-index/upload flow in UI
+- FAISS index must already exist before opening the app
+- Build/refresh index via CLI only (`rag-sgu build-index`)
+
+Optional web deployment env vars:
+
+```env
+WEB_ALLOWED_EMAIL_DOMAINS=sgu.edu.vn
+WEB_RATE_LIMIT_REQUESTS=20
+WEB_RATE_LIMIT_WINDOW_SECONDS=60
+WEB_SEMANTIC_CACHE_THRESHOLD=0.95
+WEB_SEMANTIC_CACHE_MAX_ENTRIES=300
+WEB_SEMANTIC_CACHE_MAX_AGE_HOURS=72
+WEB_SEMANTIC_CACHE_REDIS_URL=
+WEB_SEMANTIC_CACHE_TTL_SECONDS=259200
+WEB_MEMORY_WINDOW=5
+LANGSMITH_API_KEY=
+PHOENIX_COLLECTOR_ENDPOINT=
+```
 
 ## Evaluation Dataset Format
 
