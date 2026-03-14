@@ -45,10 +45,14 @@ env/
 .DS_Store
 
 # Project Specific
-vector_store/          # FAISS index (large files)
-File_PDFs/*.pdf       # PDF files (may be sensitive)
-OCR/tesseract.exe     # Binary executable
-OCR/tessdata/*.traineddata  # Language models (large files)
+# FAISS index and rebuild backups
+vector_store/
+vector_store_backup_*/
+
+# PDF files and OCR binaries
+File_PDFs/*.pdf
+OCR/tesseract.exe
+OCR/tessdata/*.traineddata
 
 # Temporary files
 *.tmp

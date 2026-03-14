@@ -2,10 +2,12 @@
 # Core Dependencies
 python-dotenv==1.0.0
 PyMuPDF==1.23.8
+pypdf==4.2.0
 pytesseract==0.3.10
 Pillow==10.1.0
 opencv-python==4.8.1.78
 google-genai==1.7.0
+unstructured[pdf]==0.16.20
 
 # LangChain
 langchain==0.1.0
@@ -26,6 +28,8 @@ transformers==4.36.2
 # Utilities
 numpy==1.24.3
 tqdm==4.66.1
+requests==2.32.3
+chardet==5.2.0
 streamlit==1.41.1
 redis==5.2.1
 pytest==8.3.5
