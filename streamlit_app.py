@@ -2,7 +2,10 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sqlite3
+import threading
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -45,6 +48,8 @@ YÊU CẦU:
 
 TRẢ LỜI:
 """
+
+NOT_FOUND_FALLBACK = "Tôi không tìm thấy thông tin này trong tài liệu"
 
 BIRTH_DATE_FORMAT = "%d/%m/%Y"
 PASSWORD_HASH_ITERATIONS = 120_000
@@ -112,10 +117,10 @@ class AppConfig:
             ),
             embedding_device=os.getenv("EMBEDDING_DEVICE", "cpu"),
             llm_model=os.getenv("LLM_MODEL", "gemini-2.5-flash"),
-            llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.6")),
+            llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.2")),
             llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
             llm_api_transport=os.getenv("LLM_API_TRANSPORT", "rest"),
-            retrieval_k=int(os.getenv("RETRIEVAL_K", "4")),
+            retrieval_k=int(os.getenv("RETRIEVAL_K", "6")),
         )
 
 
@@ -423,9 +428,72 @@ class RAGService:
         self.vector_store = None
         self.llm = None
         self.llm_unavailable_reason = ""
-        self._init_embeddings()
-        self._load_vector_store()
+        self._retriever_ready = False
+        self._retriever_lock = threading.Lock()
+        self._preload_started = False
+        self._preload_error = ""
+        self._preload_thread: Optional[threading.Thread] = None
         self._init_llm_if_available()
+
+    @property
+    def retriever_ready(self) -> bool:
+        return self._retriever_ready
+
+    @property
+    def retriever_status(self) -> str:
+        if self._retriever_ready:
+            return "Đã nạp index"
+        if self._preload_started:
+            return "Đang preload nền..."
+        if self._preload_error:
+            return "Preload lỗi, sẽ lazy-load khi hỏi"
+        return "Lazy-load (nạp ở câu hỏi đầu tiên)"
+
+    @property
+    def retriever_last_error(self) -> str:
+        return self._preload_error
+
+    def _ensure_retriever_ready(self) -> None:
+        if self._retriever_ready:
+            return
+
+        with self._retriever_lock:
+            if self._retriever_ready:
+                return
+
+            self._init_embeddings()
+            self._load_vector_store()
+            self._retriever_ready = True
+            self._preload_error = ""
+
+    def _preload_worker(self) -> None:
+        try:
+            self._ensure_retriever_ready()
+        except Exception as exc:
+            with self._retriever_lock:
+                self._preload_error = f"{type(exc).__name__}: {exc}"
+                self._preload_started = False
+            return
+
+        with self._retriever_lock:
+            self._preload_started = False
+
+    def start_preload(self) -> None:
+        if self._retriever_ready:
+            return
+
+        with self._retriever_lock:
+            if self._retriever_ready or self._preload_started:
+                return
+
+            self._preload_started = True
+            self._preload_error = ""
+            self._preload_thread = threading.Thread(
+                target=self._preload_worker,
+                name="rag-retriever-preload",
+                daemon=True,
+            )
+            self._preload_thread.start()
 
     def _init_embeddings(self) -> None:
         self.embeddings = HuggingFaceEmbeddings(
@@ -476,6 +544,32 @@ class RAGService:
             "429",
         ]
         return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        lowered = text.casefold()
+        without_marks = "".join(
+            ch for ch in unicodedata.normalize("NFD", lowered) if unicodedata.category(ch) != "Mn"
+        )
+        return re.sub(r"[^a-z0-9]+", " ", without_marks).strip()
+
+    def _is_not_found_answer(self, answer: str) -> bool:
+        return self._normalize_text(answer) == self._normalize_text(NOT_FOUND_FALLBACK)
+
+    @staticmethod
+    def _build_mmr_search_kwargs(k: int) -> Dict[str, Any]:
+        fetch_k = max(k * 4, k + 8)
+        return {
+            "k": k,
+            "fetch_k": fetch_k,
+            "lambda_mult": 0.7,
+        }
+
+    def _retrieve_docs(self, question: str, k: int) -> List[Any]:
+        return self.vector_store.max_marginal_relevance_search(
+            question,
+            **self._build_mmr_search_kwargs(k),
+        )
 
     @staticmethod
     def _short_source_name(source: str) -> str:
@@ -598,13 +692,24 @@ class RAGService:
             lines.append("- Không có đoạn nội dung phù hợp để hiển thị.")
         return "\n".join(lines)
 
+    def _generate_answer(self, question: str, docs: List[Any]) -> str:
+        context = self._build_context(docs)
+        prompt = SYSTEM_PROMPT.format(context=context, question=question)
+        response = self.llm.invoke(prompt)
+        answer = str(getattr(response, "content", response)).strip()
+        if not answer:
+            return NOT_FOUND_FALLBACK
+        return answer
+
     def query(self, question: str, top_k: Optional[int] = None) -> Dict[str, Any]:
+        self._ensure_retriever_ready()
+
         k = int(top_k or self.config.retrieval_k)
-        docs = self.vector_store.similarity_search(question, k=k)
+        docs = self._retrieve_docs(question, k=k)
 
         if not docs:
             return {
-                "answer": "Tôi không tìm thấy thông tin này trong tài liệu.",
+                "answer": NOT_FOUND_FALLBACK,
                 "sources": [],
                 "docs": [],
             }
@@ -612,23 +717,27 @@ class RAGService:
         sources = self._dedupe_sources(
             [self._extract_source_label(doc, idx + 1) for idx, doc in enumerate(docs)]
         )
-        context = self._build_context(docs)
 
         if self.llm is None:
             answer = self._build_retrieval_only_answer(docs)
             return {"answer": answer, "sources": sources, "docs": docs}
 
-        prompt = (
-            f"{SYSTEM_PROMPT}\n\n"
-            f"Ngữ cảnh:\n{context}\n\n"
-            f"Câu hỏi: {question}\n\n"
-            "Trả lời:"
-        )
         try:
-            response = self.llm.invoke(prompt)
-            answer = str(getattr(response, "content", response)).strip()
-            if not answer:
-                answer = "Tôi không tìm thấy thông tin này trong tài liệu."
+            answer = self._generate_answer(question, docs)
+
+            # Match notebook behavior: retry once with broader retrieval when fallback is returned.
+            if self._is_not_found_answer(answer) and docs:
+                retry_k = max(self.config.retrieval_k + 3, 8)
+                retry_docs = self._retrieve_docs(question, k=retry_k)
+
+                if retry_docs:
+                    retry_answer = self._generate_answer(question, retry_docs)
+                    if retry_answer and not self._is_not_found_answer(retry_answer):
+                        docs = retry_docs
+                        sources = self._dedupe_sources(
+                            [self._extract_source_label(doc, idx + 1) for idx, doc in enumerate(docs)]
+                        )
+                        answer = retry_answer
         except Exception as exc:
             answer = self._build_retrieval_only_answer(docs, exc=exc)
         return {"answer": answer, "sources": sources, "docs": docs}
@@ -639,7 +748,7 @@ def get_database_manager(db_path: Path) -> DatabaseManager:
     return DatabaseManager(db_path)
 
 
-@st.cache_resource(show_spinner=True)
+@st.cache_resource(show_spinner=False)
 def get_rag_service(config: AppConfig) -> RAGService:
     return RAGService(config)
 
@@ -703,8 +812,11 @@ def render_chat_page(db: DatabaseManager, rag: RAGService, user: Dict[str, Any],
     st.title("RAG Chat Demo")
     status = "Có Gemini" if rag.llm is not None else "Chỉ truy xuất"
     status_detail = f" ({rag.llm_unavailable_reason})" if rag.llm is None and rag.llm_unavailable_reason else ""
+    retriever_status = rag.retriever_status
+    if rag.retriever_last_error:
+        retriever_status = f"{retriever_status} ({rag.retriever_last_error})"
     st.caption(
-        f"Mô hình embedding: {config.embedding_model} | Chế độ LLM: {status}{status_detail} | top-k: {config.retrieval_k}"
+        f"Mô hình embedding: {config.embedding_model} | Chế độ LLM: {status}{status_detail} | Retriever: {retriever_status} | top-k: {config.retrieval_k}"
     )
 
     for message in st.session_state["chat_messages"]:
@@ -841,11 +953,13 @@ def main() -> None:
         return
 
     user = st.session_state["user"]
+    rag = get_rag_service(config)
+    # Start retriever warm-up after login so first query is faster.
+    rag.start_preload()
     menu = render_sidebar(user)
 
     if menu == MENU_CHAT:
         try:
-            rag = get_rag_service(config)
             render_chat_page(db, rag, user, config)
         except Exception as exc:
             st.error(f"Không thể khởi tạo dịch vụ RAG: {exc}")
