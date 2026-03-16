@@ -6,7 +6,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Keep transformers on the PyTorch code path to avoid TensorFlow/protobuf issues on Windows.
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
@@ -47,6 +47,29 @@ TRẢ LỜI:
 """
 
 BIRTH_DATE_FORMAT = "%d/%m/%Y"
+PASSWORD_HASH_ITERATIONS = 120_000
+
+ROLE_USER = "user"
+ROLE_ADMIN = "admin"
+VALID_ROLES = {ROLE_USER, ROLE_ADMIN}
+ROLE_LABELS = {
+    ROLE_USER: "Người dùng",
+    ROLE_ADMIN: "Quản trị viên",
+}
+
+MENU_CHAT = "Chat RAG"
+MENU_USER_MANAGEMENT = "Quản lý người dùng"
+MENU_CHAT_LOGS = "Nhật ký chat"
+MENU_MY_HISTORY = "Lịch sử của tôi"
+
+ADMIN_MENU_OPTIONS = [MENU_CHAT, MENU_USER_MANAGEMENT, MENU_CHAT_LOGS]
+USER_MENU_OPTIONS = [MENU_CHAT, MENU_MY_HISTORY]
+
+DEFAULT_ADMIN_MSSV = "admin"
+DEFAULT_ADMIN_BIRTH_DATE = "01/01/2000"
+
+CHAT_LOG_MIN_LIMIT = 1
+CHAT_LOG_MAX_LIMIT = 500
 
 
 def _resolve_path(value: str, base_dir: Path) -> Path:
@@ -98,7 +121,12 @@ class AppConfig:
 
 def hash_password(password: str) -> str:
     salt = os.urandom(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120000)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        PASSWORD_HASH_ITERATIONS,
+    )
     return f"{salt.hex()}:{digest.hex()}"
 
 
@@ -106,7 +134,12 @@ def verify_password(password: str, stored_hash: str) -> bool:
     try:
         salt_hex, digest_hex = stored_hash.split(":", 1)
         salt = bytes.fromhex(salt_hex)
-        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120000)
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            PASSWORD_HASH_ITERATIONS,
+        )
         return hmac.compare_digest(digest.hex(), digest_hex)
     except Exception:
         return False
@@ -123,6 +156,29 @@ def normalize_birth_date(value: str) -> Optional[str]:
         return None
 
     return parsed.strftime(BIRTH_DATE_FORMAT)
+
+
+def get_admin_credentials() -> Tuple[str, str]:
+    admin_mssv = os.getenv("RAG_ADMIN_MSSV", DEFAULT_ADMIN_MSSV)
+    admin_birth_date = os.getenv("RAG_ADMIN_BIRTH_DATE", DEFAULT_ADMIN_BIRTH_DATE)
+    return admin_mssv, admin_birth_date
+
+
+def result_ok(message: str) -> Dict[str, str]:
+    return {"status": "ok", "message": message}
+
+
+def result_error(message: str) -> Dict[str, str]:
+    return {"status": "error", "message": message}
+
+
+def write_sources(sources: List[str]) -> None:
+    for source in sources:
+        st.write(f"- {source}")
+
+
+def role_label(role: str) -> str:
+    return ROLE_LABELS.get(role, role)
 
 
 class DatabaseManager:
@@ -175,7 +231,7 @@ class DatabaseManager:
                 "CREATE INDEX IF NOT EXISTS idx_chat_logs_mssv_time ON chat_logs(mssv, created_at)"
             )
             # One-time role normalization for existing records.
-            conn.execute("UPDATE users SET role = 'user' WHERE role = 'student'")
+            conn.execute("UPDATE users SET role = ? WHERE role = 'student'", (ROLE_USER,))
             conn.commit()
 
     def ensure_admin(self, mssv: str, birth_date: str, full_name: str = "System Admin") -> None:
@@ -189,16 +245,16 @@ class DatabaseManager:
                 mssv=mssv,
                 full_name=full_name,
                 birth_date=normalized_birth_date,
-                role="admin",
+                role=ROLE_ADMIN,
             )
             return
 
         updates: List[str] = []
         values: List[str] = []
 
-        if str(user.get("role") or "") != "admin":
+        if str(user.get("role") or "") != ROLE_ADMIN:
             updates.append("role = ?")
-            values.append("admin")
+            values.append(ROLE_ADMIN)
 
         # Migrate legacy admin accounts that were password-based.
         if not str(user.get("birth_date") or "").strip():
@@ -225,21 +281,20 @@ class DatabaseManager:
         mssv: str,
         full_name: str,
         birth_date: str,
-        role: str = "user",
+        role: str = ROLE_USER,
     ) -> Dict[str, str]:
         mssv = mssv.strip()
         full_name = full_name.strip()
         normalized_birth_date = normalize_birth_date(birth_date)
 
         if not mssv or not full_name or normalized_birth_date is None:
-            return {
-                "status": "error",
-                "message": "Thông tin tạo tài khoản không hợp lệ. Ngày sinh phải theo định dạng dd/mm/yyyy.",
-            }
-        if role not in {"user", "admin"}:
-            return {"status": "error", "message": "Vai trò không hợp lệ."}
+            return result_error(
+                "Thông tin tạo tài khoản không hợp lệ. Ngày sinh phải theo định dạng dd/mm/yyyy."
+            )
+        if role not in VALID_ROLES:
+            return result_error("Vai trò không hợp lệ.")
         if self.get_user(mssv):
-            return {"status": "error", "message": f"MSSV {mssv} đã tồn tại."}
+            return result_error(f"MSSV {mssv} đã tồn tại.")
 
         with self._connect() as conn:
             conn.execute(
@@ -258,25 +313,25 @@ class DatabaseManager:
             )
             conn.commit()
 
-        return {"status": "ok", "message": f"Đã tạo tài khoản {mssv}."}
+        return result_ok(f"Đã tạo tài khoản {mssv}.")
 
     def delete_user(self, mssv: str, actor_mssv: str) -> Dict[str, str]:
         mssv = mssv.strip()
         if not mssv:
-            return {"status": "error", "message": "MSSV không hợp lệ."}
+            return result_error("MSSV không hợp lệ.")
         if mssv == actor_mssv:
-            return {"status": "error", "message": "Không thể xóa tài khoản đang đăng nhập."}
+            return result_error("Không thể xóa tài khoản đang đăng nhập.")
 
         with self._connect() as conn:
             found = conn.execute("SELECT mssv FROM users WHERE mssv = ?", (mssv,)).fetchone()
             if not found:
-                return {"status": "error", "message": f"Không tìm thấy MSSV {mssv}."}
+                return result_error(f"Không tìm thấy MSSV {mssv}.")
 
             conn.execute("DELETE FROM users WHERE mssv = ?", (mssv,))
             conn.execute("DELETE FROM chat_logs WHERE mssv = ?", (mssv,))
             conn.commit()
 
-        return {"status": "ok", "message": f"Đã xóa tài khoản {mssv}."}
+        return result_ok(f"Đã xóa tài khoản {mssv}.")
 
     def authenticate(self, mssv: str, birth_date: str) -> Optional[Dict[str, Any]]:
         user = self.get_user(mssv.strip())
@@ -326,7 +381,7 @@ class DatabaseManager:
             conn.commit()
 
     def get_chat_logs(self, limit: int = 100, mssv: Optional[str] = None) -> List[Dict[str, Any]]:
-        safe_limit = max(1, min(limit, 500))
+        safe_limit = max(CHAT_LOG_MIN_LIMIT, min(limit, CHAT_LOG_MAX_LIMIT))
         with self._connect() as conn:
             if mssv:
                 rows = conn.execute(
@@ -502,6 +557,47 @@ class RAGService:
             snippets.append(f"- **{source_label}**: {short_content}")
         return snippets
 
+    @staticmethod
+    def _build_context(docs: List[Any]) -> str:
+        return "\n\n".join(
+            [
+                f"[Tài liệu {idx + 1}]\n{doc.page_content}"
+                for idx, doc in enumerate(docs)
+                if getattr(doc, "page_content", "").strip()
+            ]
+        )
+
+    def _build_retrieval_only_answer(
+        self,
+        docs: List[Any],
+        exc: Optional[Exception] = None,
+    ) -> str:
+        if exc is not None and self._is_quota_or_rate_limit_error(exc):
+            self.llm = None
+            self.llm_unavailable_reason = "Gemini vượt giới hạn truy cập (quota/rate limit)"
+
+        if exc is not None and not self._is_quota_or_rate_limit_error(exc):
+            reason = f"Gemini tạm thời không khả dụng ({type(exc).__name__})"
+        else:
+            reason = self.llm_unavailable_reason or "LLM không khả dụng"
+
+        mode_text = (
+            "hệ thống chuyển sang chế độ chỉ truy xuất."
+            if exc is not None
+            else "hệ thống đang ở chế độ chỉ truy xuất."
+        )
+
+        fallback_snippets = self._build_fallback_snippets(docs)
+        lines = [
+            f"{reason}, {mode_text}",
+            "Thông tin liên quan nhất (kèm nguồn):",
+        ]
+        if fallback_snippets:
+            lines.extend(fallback_snippets)
+        else:
+            lines.append("- Không có đoạn nội dung phù hợp để hiển thị.")
+        return "\n".join(lines)
+
     def query(self, question: str, top_k: Optional[int] = None) -> Dict[str, Any]:
         k = int(top_k or self.config.retrieval_k)
         docs = self.vector_store.similarity_search(question, k=k)
@@ -516,24 +612,10 @@ class RAGService:
         sources = self._dedupe_sources(
             [self._extract_source_label(doc, idx + 1) for idx, doc in enumerate(docs)]
         )
-        context = "\n\n".join(
-            [
-                f"[Tài liệu {idx + 1}]\n{doc.page_content}"
-                for idx, doc in enumerate(docs)
-                if getattr(doc, "page_content", "").strip()
-            ]
-        )
+        context = self._build_context(docs)
 
         if self.llm is None:
-            fallback_snippets = self._build_fallback_snippets(docs)
-            reason = self.llm_unavailable_reason or "LLM không khả dụng"
-            answer = "\n".join(
-                [
-                    f"{reason}, hệ thống đang ở chế độ chỉ truy xuất.",
-                    "Thông tin liên quan nhất (kèm nguồn):",
-                    *fallback_snippets,
-                ]
-            )
+            answer = self._build_retrieval_only_answer(docs)
             return {"answer": answer, "sources": sources, "docs": docs}
 
         prompt = (
@@ -548,19 +630,7 @@ class RAGService:
             if not answer:
                 answer = "Tôi không tìm thấy thông tin này trong tài liệu."
         except Exception as exc:
-            if self._is_quota_or_rate_limit_error(exc):
-                self.llm = None
-                self.llm_unavailable_reason = "Gemini vượt giới hạn truy cập (quota/rate limit)"
-
-            fallback_snippets = self._build_fallback_snippets(docs)
-            reason = self.llm_unavailable_reason or f"Gemini tạm thời không khả dụng ({type(exc).__name__})"
-            answer = "\n".join(
-                [
-                    f"{reason}, hệ thống chuyển sang chế độ chỉ truy xuất.",
-                    "Thông tin liên quan nhất (kèm nguồn):",
-                    *fallback_snippets,
-                ]
-            )
+            answer = self._build_retrieval_only_answer(docs, exc=exc)
         return {"answer": answer, "sources": sources, "docs": docs}
 
 
@@ -605,8 +675,7 @@ def render_login(db: DatabaseManager) -> None:
             st.success(f"Xin chào {user['full_name']} ({user['mssv']})")
             st.rerun()
 
-    admin_mssv = os.getenv("RAG_ADMIN_MSSV", "admin")
-    admin_birth_date = os.getenv("RAG_ADMIN_BIRTH_DATE", "01/01/2000")
+    admin_mssv, admin_birth_date = get_admin_credentials()
     st.info(
         f"Tài khoản admin mặc định: mssv={admin_mssv}, ngày sinh={admin_birth_date}. "
         "Ngày sinh phải theo định dạng dd/mm/yyyy."
@@ -614,24 +683,20 @@ def render_login(db: DatabaseManager) -> None:
 
 
 def render_sidebar(user: Dict[str, Any]) -> str:
-    role_label = "Quản trị viên" if user["role"] == "admin" else "Người dùng"
+    current_role_label = role_label(str(user.get("role", "")))
 
     st.sidebar.header("Tài khoản")
     st.sidebar.write(f"MSSV: {user['mssv']}")
     st.sidebar.write(f"Họ tên: {user['full_name']}")
-    st.sidebar.write(f"Vai trò: {role_label}")
+    st.sidebar.write(f"Vai trò: {current_role_label}")
 
     if st.sidebar.button("Đăng xuất"):
         logout()
         st.rerun()
 
-    if user["role"] == "admin":
-        return st.sidebar.radio(
-            "Menu",
-            ["Chat RAG", "Quản lý người dùng", "Nhật ký chat"],
-            index=0,
-        )
-    return st.sidebar.radio("Menu", ["Chat RAG", "Lịch sử của tôi"], index=0)
+    if user["role"] == ROLE_ADMIN:
+        return st.sidebar.radio("Menu", ADMIN_MENU_OPTIONS, index=0)
+    return st.sidebar.radio("Menu", USER_MENU_OPTIONS, index=0)
 
 
 def render_chat_page(db: DatabaseManager, rag: RAGService, user: Dict[str, Any], config: AppConfig) -> None:
@@ -647,8 +712,7 @@ def render_chat_page(db: DatabaseManager, rag: RAGService, user: Dict[str, Any],
             st.markdown(message["content"])
             if message.get("sources"):
                 with st.expander("Nguồn tham khảo"):
-                    for source in message["sources"]:
-                        st.write(f"- {source}")
+                    write_sources(message["sources"])
 
     question = st.chat_input("Nhập câu hỏi về tài liệu...")
     if not question:
@@ -667,8 +731,7 @@ def render_chat_page(db: DatabaseManager, rag: RAGService, user: Dict[str, Any],
         st.markdown(answer)
         if sources:
             with st.expander("Nguồn tham khảo"):
-                for source in sources:
-                    st.write(f"- {source}")
+                write_sources(sources)
 
     db.save_chat_log(user["mssv"], question, answer, sources)
     st.session_state["chat_messages"].append(
@@ -683,7 +746,7 @@ def render_user_management(db: DatabaseManager, user: Dict[str, Any]) -> None:
 
     with create_tab:
         with st.form("create_user_form"):
-            role_options = {"Người dùng": "user", "Quản trị viên": "admin"}
+            role_options = {"Người dùng": ROLE_USER, "Quản trị viên": ROLE_ADMIN}
 
             new_mssv = st.text_input("MSSV mới")
             new_name = st.text_input("Họ tên")
@@ -707,7 +770,6 @@ def render_user_management(db: DatabaseManager, user: Dict[str, Any]) -> None:
         users = db.list_users()
         st.write(f"Tổng số tài khoản: {len(users)}")
 
-        role_labels = {"user": "Người dùng", "admin": "Quản trị viên"}
         display_users: List[Dict[str, Any]] = []
         for item in users:
             display_users.append(
@@ -715,7 +777,7 @@ def render_user_management(db: DatabaseManager, user: Dict[str, Any]) -> None:
                     "MSSV": item.get("mssv", ""),
                     "Họ tên": item.get("full_name", ""),
                     "Ngày sinh": item.get("birth_date", ""),
-                    "Vai trò": role_labels.get(item.get("role", ""), item.get("role", "")),
+                    "Vai trò": role_label(str(item.get("role", ""))),
                     "Ngày tạo": item.get("created_at", ""),
                 }
             )
@@ -759,8 +821,7 @@ def render_logs(db: DatabaseManager, user: Dict[str, Any], admin_mode: bool) -> 
             st.write(item["answer"])
             if item.get("sources"):
                 st.markdown("**Nguồn tham khảo**")
-                for source in item["sources"]:
-                    st.write(f"- {source}")
+                write_sources(item["sources"])
 
 
 def main() -> None:
@@ -770,8 +831,7 @@ def main() -> None:
     config = AppConfig.from_env()
     db = get_database_manager(config.db_path)
 
-    admin_mssv = os.getenv("RAG_ADMIN_MSSV", "admin")
-    admin_birth_date = os.getenv("RAG_ADMIN_BIRTH_DATE", "01/01/2000")
+    admin_mssv, admin_birth_date = get_admin_credentials()
     db.ensure_admin(admin_mssv, admin_birth_date)
 
     init_session_state()
@@ -783,7 +843,7 @@ def main() -> None:
     user = st.session_state["user"]
     menu = render_sidebar(user)
 
-    if menu == "Chat RAG":
+    if menu == MENU_CHAT:
         try:
             rag = get_rag_service(config)
             render_chat_page(db, rag, user, config)
@@ -794,13 +854,13 @@ def main() -> None:
                 "và đã cài đúng dependencies trong requirements.txt"
             )
 
-    elif menu == "Quản lý người dùng":
+    elif menu == MENU_USER_MANAGEMENT:
         render_user_management(db, user)
 
-    elif menu == "Nhật ký chat":
+    elif menu == MENU_CHAT_LOGS:
         render_logs(db, user, admin_mode=True)
 
-    elif menu == "Lịch sử của tôi":
+    elif menu == MENU_MY_HISTORY:
         render_logs(db, user, admin_mode=False)
 
 
