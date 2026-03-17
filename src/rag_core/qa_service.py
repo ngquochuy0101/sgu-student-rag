@@ -25,11 +25,13 @@ CÂU HỎI: {question}
 
 YÊU CẦU:
 1. Trả lời chính xác, dựa hoàn toàn vào thông tin được cung cấp
-2. Trả lời ngắn gọn, rõ ràng bằng tiếng Việt
+2. Trả lời rõ ràng, đầy đủ các ý liên quan bằng tiếng Việt (không rút gọn quá mức)
 3. Nếu không tìm thấy thông tin, hãy trả lời: "Tôi không tìm thấy thông tin này trong tài liệu"
 4. Không bịa đặt thông tin không có trong tài liệu
 5. Sử dụng bullet points nếu cần liệt kê
 6. Nếu câu hỏi không liên quan đến tài liệu, trả lời: "Tôi không tìm thấy thông tin này trong tài liệu"
+7. Với câu hỏi dạng "mục tiêu", "chuẩn đầu ra", "nội dung gồm những gì", hãy liệt kê đầy đủ các ý tìm thấy trong ngữ cảnh
+8. Đảm bảo câu trả lời kết thúc trọn ý, không bỏ dở giữa câu
 
 TRẢ LỜI:
 """
@@ -221,7 +223,11 @@ class RAGService:
                 source = str(value).strip()
                 break
 
-        source_name = RAGService._short_source_name(source) if source else f"Tài liệu {idx}"
+        source_name = (
+            RAGService._short_source_name(source)
+            if source
+            else f"Tài liệu {idx} (thiếu metadata nguồn)"
+        )
         page = RAGService._coerce_page_number(metadata)
         if page is not None:
             return f"{source_name} - trang {page}"
@@ -259,7 +265,7 @@ class RAGService:
     def _build_context(docs: List[Any]) -> str:
         return "\n\n".join(
             [
-                f"[Tài liệu {idx + 1}]\n{doc.page_content}"
+                f"[Nguồn {idx + 1}: {RAGService._extract_source_label(doc, idx + 1)}]\n{doc.page_content}"
                 for idx, doc in enumerate(docs)
                 if getattr(doc, "page_content", "").strip()
             ]
@@ -308,10 +314,25 @@ class RAGService:
     def _retrieve_docs(self, question: str, k: int) -> List[Any]:
         return self.vector_store.similarity_search(question, k=k)
 
+    @classmethod
+    def _should_expand_retrieval(cls, question: str) -> bool:
+        normalized = cls._normalize_text(question)
+        broad_markers = (
+            "muc tieu",
+            "chuan dau ra",
+            "noi dung",
+            "bao gom",
+            "gom nhung gi",
+            "liet ke",
+        )
+        return any(marker in normalized for marker in broad_markers)
+
     def query(self, question: str, top_k: Optional[int] = None) -> Dict[str, Any]:
         self._ensure_retriever_ready()
 
         k = max(1, int(top_k or self.config.retrieval_k))
+        if self._should_expand_retrieval(question):
+            k = max(k, self.config.retrieval_k + 4)
         docs = self._retrieve_docs(question, k=k)
 
         if not docs:

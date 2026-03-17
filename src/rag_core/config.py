@@ -37,7 +37,7 @@ class RAGConfig:
 
         return RAGConfig(
             base_dir=root_dir,
-            pdf_dir=_resolve_path(os.getenv("RAG_PDF_DIR", "File_PDFs"), root_dir),
+            pdf_dir=_resolve_path(os.getenv("RAG_PDF_DIR", "File_PDFs_OCR"), root_dir),
             vector_store_dir=_resolve_path(
                 os.getenv("RAG_VECTOR_STORE_DIR", "vector_store"),
                 root_dir,
@@ -47,7 +47,8 @@ class RAGConfig:
                 root_dir,
             ),
             pdf_glob_pattern=os.getenv("RAG_PDF_GLOB", "*.pdf"),
-            chunk_size=int(os.getenv("CHUNK_SIZE", "1000")),
+            chunk_size=int(os.getenv("CHUNK_SIZE", "1600")),
+            
             chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "200")),
             separators=("\n\n", "\n", ". ", " ", ""),
             embedding_model=os.getenv(
@@ -56,8 +57,8 @@ class RAGConfig:
             ),
             embedding_device=os.getenv("EMBEDDING_DEVICE", "cpu"),
             llm_model=os.getenv("LLM_MODEL", "gemini-2.5-flash"),
-            llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.2")),
+            llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.5")),
             llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
             llm_api_transport=os.getenv("LLM_API_TRANSPORT", "rest"),
-            retrieval_k=int(os.getenv("RETRIEVAL_K", "6")),
+            retrieval_k=int(os.getenv("RETRIEVAL_K", "4")),
         )

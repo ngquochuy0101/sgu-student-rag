@@ -107,6 +107,26 @@ def write_sources(sources: List[str]) -> None:
         st.write(f"- {source}")
 
 
+def build_retrieved_passage_previews(
+    rag: RAGService,
+    docs: List[Any],
+    max_items: int = 5,
+    max_chars: int = 180,
+) -> List[str]:
+    previews: List[str] = []
+    for idx, doc in enumerate(docs[:max_items], start=1):
+        content = str(getattr(doc, "page_content", "")).replace("\n", " ").strip()
+        if not content:
+            continue
+
+        label = rag._extract_source_label(doc, idx)
+        short_content = content[:max_chars].rstrip()
+        if len(content) > max_chars:
+            short_content += "..."
+        previews.append(f"{label}: {short_content}")
+    return previews
+
+
 def role_label(role: str) -> str:
     return ROLE_LABELS.get(role, role)
 
@@ -360,6 +380,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("logged_in", False)
     st.session_state.setdefault("user", None)
     st.session_state.setdefault("chat_messages", [])
+    st.session_state.setdefault("rag_reloaded_notice", False)
 
 
 def logout() -> None:
@@ -379,7 +400,7 @@ def render_login(db: DatabaseManager) -> None:
             placeholder="Ví dụ: 02/09/2004",
             key="login_birth_date",
         )
-        submitted = st.form_submit_button("Đăng nhập", key="login_submit")
+        submitted = st.form_submit_button("Đăng nhập")
 
     if submitted:
         user = db.authenticate(mssv, birth_date)
@@ -406,6 +427,13 @@ def render_sidebar(user: Dict[str, Any]) -> str:
     st.sidebar.write(f"Họ tên: {user['full_name']}")
     st.sidebar.write(f"Vai trò: {current_role_label}")
 
+    if st.sidebar.button("Nạp lại RAG index", key="sidebar_reload_rag"):
+        # Clear cached service so latest FAISS/config is loaded on rerun.
+        get_rag_service.clear()
+        st.session_state["chat_messages"] = []
+        st.session_state["rag_reloaded_notice"] = True
+        st.rerun()
+
     if st.sidebar.button("Đăng xuất", key="sidebar_logout"):
         logout()
         st.rerun()
@@ -417,13 +445,49 @@ def render_sidebar(user: Dict[str, Any]) -> str:
 
 def render_chat_page(db: DatabaseManager, rag: RAGService, user: Dict[str, Any], config: RAGConfig) -> None:
     st.title("RAG Chat Demo")
+
+    with st.sidebar.expander("Tham so chat", expanded=False):
+        ui_top_k = st.slider(
+            "Top-k truy xuat",
+            min_value=1,
+            max_value=20,
+            value=max(1, int(config.retrieval_k)),
+            step=1,
+            key="chat_top_k",
+        )
+        ui_show_passage_previews = st.checkbox(
+            "Hien thi top doan truy xuat",
+            value=True,
+            key="chat_show_passage_previews",
+        )
+        ui_preview_items = st.slider(
+            "So doan hien thi",
+            min_value=1,
+            max_value=10,
+            value=5,
+            step=1,
+            key="chat_preview_items",
+            disabled=not ui_show_passage_previews,
+        )
+        ui_preview_chars = st.slider(
+            "So ky tu moi doan",
+            min_value=80,
+            max_value=500,
+            value=180,
+            step=20,
+            key="chat_preview_chars",
+            disabled=not ui_show_passage_previews,
+        )
+
     status = "Có Gemini" if rag.llm is not None else "Chỉ truy xuất"
     status_detail = f" ({rag.llm_unavailable_reason})" if rag.llm is None and rag.llm_unavailable_reason else ""
     retriever_status = rag.retriever_status
     if rag.retriever_last_error:
         retriever_status = f"{retriever_status} ({rag.retriever_last_error})"
     st.caption(
-        f"Mô hình embedding: {config.embedding_model} | Chế độ LLM: {status}{status_detail} | Retriever: {retriever_status} | top-k: {config.retrieval_k}"
+        f"Mô hình embedding: {config.embedding_model} | Chế độ LLM: {status}{status_detail} | "
+        f"temp: {config.llm_temperature} | Retriever: {retriever_status} | top-k: {ui_top_k} | "
+        f"PDF dir: {config.pdf_dir}"
     )
 
     for message in st.session_state["chat_messages"]:
@@ -432,6 +496,9 @@ def render_chat_page(db: DatabaseManager, rag: RAGService, user: Dict[str, Any],
             if message.get("sources"):
                 with st.expander("Nguồn tham khảo"):
                     write_sources(message["sources"])
+            if ui_show_passage_previews and message.get("passage_previews"):
+                with st.expander("Top đoạn truy xuất"):
+                    write_sources(message["passage_previews"])
 
     question = st.chat_input("Nhập câu hỏi về tài liệu...", key="chat_question_input")
     if not question:
@@ -443,18 +510,35 @@ def render_chat_page(db: DatabaseManager, rag: RAGService, user: Dict[str, Any],
 
     with st.chat_message("assistant"):
         with st.spinner("Đang truy vấn hệ thống RAG..."):
-            result = rag.query(question)
+            result = rag.query(question, top_k=ui_top_k)
             answer = result["answer"]
             sources = result["sources"]
+            if ui_show_passage_previews:
+                passage_previews = build_retrieved_passage_previews(
+                    rag,
+                    result.get("docs", []),
+                    max_items=ui_preview_items,
+                    max_chars=ui_preview_chars,
+                )
+            else:
+                passage_previews = []
 
         st.markdown(answer)
         if sources:
             with st.expander("Nguồn tham khảo"):
                 write_sources(sources)
+        if passage_previews:
+            with st.expander("Top đoạn truy xuất"):
+                write_sources(passage_previews)
 
     db.save_chat_log(user["mssv"], question, answer, sources)
     st.session_state["chat_messages"].append(
-        {"role": "assistant", "content": answer, "sources": sources}
+        {
+            "role": "assistant",
+            "content": answer,
+            "sources": sources,
+            "passage_previews": passage_previews,
+        }
     )
 
 
@@ -480,7 +564,7 @@ def render_user_management(db: DatabaseManager, user: Dict[str, Any]) -> None:
                 index=0,
                 key="create_user_role",
             )
-            create_submitted = st.form_submit_button("Tạo tài khoản", key="create_user_submit")
+            create_submitted = st.form_submit_button("Tạo tài khoản")
 
         if create_submitted:
             outcome = db.create_user(
@@ -580,6 +664,10 @@ def main() -> None:
     # Start retriever warm-up after login so first query is faster.
     rag.start_preload()
     menu = render_sidebar(user)
+
+    if st.session_state.get("rag_reloaded_notice"):
+        st.success("Đã nạp lại RAG index theo dữ liệu mới nhất.")
+        st.session_state["rag_reloaded_notice"] = False
 
     if menu == MENU_CHAT:
         try:
