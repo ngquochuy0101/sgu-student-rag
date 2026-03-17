@@ -6,13 +6,13 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from .environment import configure_runtime_environment
+
+# Must be applied before importing Gemini-related modules.
+configure_runtime_environment()
 
 from .config import RAGConfig
-from .environment import configure_runtime_environment
 from .vector_store import VectorStoreManager
-
-configure_runtime_environment()
 
 SYSTEM_PROMPT = """Bạn là trợ lý AI chuyên nghiệp, chuyên gia về tài liệu đào tạo.
 
@@ -131,16 +131,29 @@ class RAGService:
             self.llm_unavailable_reason = "Chưa cấu hình GOOGLE_API_KEY"
             return
 
-        self.llm = ChatGoogleGenerativeAI(
-            model=self.config.llm_model,
-            google_api_key=api_key,
-            temperature=self.config.llm_temperature,
-            max_output_tokens=self.config.llm_max_tokens,
-            api_transport=self.config.llm_api_transport,
-            retries=1,
-            convert_system_message_to_human=True,
-        )
-        self.llm_unavailable_reason = ""
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+
+            self.llm = ChatGoogleGenerativeAI(
+                model=self.config.llm_model,
+                google_api_key=api_key,
+                temperature=self.config.llm_temperature,
+                max_output_tokens=self.config.llm_max_tokens,
+                api_transport=self.config.llm_api_transport,
+                retries=1,
+                convert_system_message_to_human=True,
+            )
+            self.llm_unavailable_reason = ""
+        except Exception as exc:
+            self.llm = None
+            message = str(exc)
+            if "Descriptors cannot be created directly" in message:
+                self.llm_unavailable_reason = (
+                    "Gemini không khả dụng do protobuf không tương thích. "
+                    "Hãy cài protobuf 3.20.x hoặc dùng PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python."
+                )
+            else:
+                self.llm_unavailable_reason = f"Gemini không khả dụng ({type(exc).__name__})"
 
     @staticmethod
     def _is_quota_or_rate_limit_error(exc: Exception) -> bool:

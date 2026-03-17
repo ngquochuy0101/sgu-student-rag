@@ -21,4 +21,5 @@ def configure_runtime_environment(overrides: Optional[Dict[str, str]] = None) ->
         values.update(overrides)
 
     for key, value in values.items():
-        os.environ.setdefault(key, value)
+        # Force a deterministic runtime to avoid protobuf/tensorflow import instability.
+        os.environ[key] = value
