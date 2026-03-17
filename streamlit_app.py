@@ -4,7 +4,7 @@ import json
 import os
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -21,6 +21,7 @@ from rag_core.environment import configure_runtime_environment
 
 configure_runtime_environment()
 
+from rag_core.pipeline import RAGPipeline
 from rag_core.qa_service import RAGService
 
 BIRTH_DATE_FORMAT = "%d/%m/%Y"
@@ -34,9 +35,9 @@ ROLE_LABELS = {
     ROLE_ADMIN: "Quản trị viên",
 }
 
-MENU_CHAT = "Chat RAG"
+MENU_CHAT = "Trò chuyện"
 MENU_USER_MANAGEMENT = "Quản lý người dùng"
-MENU_CHAT_LOGS = "Nhật ký chat"
+MENU_CHAT_LOGS = "Nhật ký hỏi đáp"
 MENU_MY_HISTORY = "Lịch sử của tôi"
 
 ADMIN_MENU_OPTIONS = [MENU_CHAT, MENU_USER_MANAGEMENT, MENU_CHAT_LOGS]
@@ -258,7 +259,7 @@ class DatabaseManager:
                     normalized_birth_date,
                     hash_password(normalized_birth_date),
                     role,
-                    datetime.utcnow().isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
                 ),
             )
             conn.commit()
@@ -325,7 +326,7 @@ class DatabaseManager:
                     question,
                     answer,
                     json.dumps(sources, ensure_ascii=False),
-                    datetime.utcnow().isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
                 ),
             )
             conn.commit()
@@ -376,6 +377,41 @@ def get_rag_service(config: RAGConfig) -> RAGService:
     return RAGService(config)
 
 
+def build_rag_index(config: RAGConfig) -> Tuple[RAGService, Optional[str]]:
+    """Build index from PDFs (like notebook), fallback to load existing index.
+
+    Returns (rag_service, status_message).
+    """
+    pipeline = RAGPipeline(config)
+    try:
+        result = pipeline.build_index()
+        pdf_count = len(result.ingestion.loaded_pdf_files)
+        doc_count = len(result.ingestion.documents)
+        chunk_count = len(result.chunks)
+        msg = (
+            f"Đã build index thành công từ PDF.\n"
+            f"- PDF đã nạp: {pdf_count}\n"
+            f"- Tài liệu trích xuất: {doc_count}\n"
+            f"- Chunks tạo ra: {chunk_count}"
+        )
+        if result.ingestion.scanned_pdf_files:
+            skipped = ", ".join(result.ingestion.scanned_pdf_files)
+            msg += f"\n- PDF bỏ qua (scan/không có text): {skipped}"
+        return pipeline.rag_service, msg
+    except Exception as build_exc:
+        try:
+            pipeline.load_index()
+            return pipeline.rag_service, (
+                f"Không thể build từ PDF ({build_exc}). "
+                "Đã nạp index có sẵn từ disk."
+            )
+        except Exception as load_exc:
+            return pipeline.rag_service, (
+                f"Không thể build ({build_exc}) "
+                f"và không thể load index ({load_exc})."
+            )
+
+
 def init_session_state() -> None:
     st.session_state.setdefault("logged_in", False)
     st.session_state.setdefault("user", None)
@@ -390,8 +426,8 @@ def logout() -> None:
 
 
 def render_login(db: DatabaseManager) -> None:
-    st.title("RAG Demo - Đăng nhập bằng MSSV")
-    st.caption("Đăng nhập để sử dụng hệ thống hỏi đáp tài liệu SGU")
+    st.title("Hệ thống Hỏi đáp Tài liệu SGU")
+    st.caption("Đăng nhập bằng MSSV và ngày sinh để sử dụng")
 
     with st.form("login_form"):
         mssv = st.text_input("MSSV", key="login_mssv")
@@ -419,7 +455,7 @@ def render_login(db: DatabaseManager) -> None:
     )
 
 
-def render_sidebar(user: Dict[str, Any]) -> str:
+def render_sidebar(user: Dict[str, Any], config: RAGConfig) -> str:
     current_role_label = role_label(str(user.get("role", "")))
 
     st.sidebar.header("Tài khoản")
@@ -428,8 +464,12 @@ def render_sidebar(user: Dict[str, Any]) -> str:
     st.sidebar.write(f"Vai trò: {current_role_label}")
 
     if st.sidebar.button("Nạp lại RAG index", key="sidebar_reload_rag"):
-        # Clear cached service so latest FAISS/config is loaded on rerun.
-        get_rag_service.clear()
+        # Giống notebook: thử build_index() từ PDF trước, fallback load_index().
+        with st.sidebar.status("Đang build lại index...", expanded=True) as status:
+            get_rag_service.clear()
+            new_rag, build_msg = build_rag_index(config)
+            st.session_state["_rebuilt_rag"] = new_rag
+            status.update(label=build_msg, state="complete")
         st.session_state["chat_messages"] = []
         st.session_state["rag_reloaded_notice"] = True
         st.rerun()
@@ -444,11 +484,11 @@ def render_sidebar(user: Dict[str, Any]) -> str:
 
 
 def render_chat_page(db: DatabaseManager, rag: RAGService, user: Dict[str, Any], config: RAGConfig) -> None:
-    st.title("RAG Chat Demo")
+    st.title("Trò chuyện với Tài liệu")
 
-    with st.sidebar.expander("Tham so chat", expanded=False):
+    with st.sidebar.expander("Tham số trò chuyện", expanded=False):
         ui_top_k = st.slider(
-            "Top-k truy xuat",
+            "Số đoạn truy xuất (top-k)",
             min_value=1,
             max_value=20,
             value=max(1, int(config.retrieval_k)),
@@ -456,12 +496,12 @@ def render_chat_page(db: DatabaseManager, rag: RAGService, user: Dict[str, Any],
             key="chat_top_k",
         )
         ui_show_passage_previews = st.checkbox(
-            "Hien thi top doan truy xuat",
+            "Hiển thị đoạn truy xuất",
             value=True,
             key="chat_show_passage_previews",
         )
         ui_preview_items = st.slider(
-            "So doan hien thi",
+            "Số đoạn hiển thị",
             min_value=1,
             max_value=10,
             value=5,
@@ -470,7 +510,7 @@ def render_chat_page(db: DatabaseManager, rag: RAGService, user: Dict[str, Any],
             disabled=not ui_show_passage_previews,
         )
         ui_preview_chars = st.slider(
-            "So ky tu moi doan",
+            "Số ký tự mỗi đoạn",
             min_value=80,
             max_value=500,
             value=180,
@@ -485,9 +525,9 @@ def render_chat_page(db: DatabaseManager, rag: RAGService, user: Dict[str, Any],
     if rag.retriever_last_error:
         retriever_status = f"{retriever_status} ({rag.retriever_last_error})"
     st.caption(
-        f"Mô hình embedding: {config.embedding_model} | Chế độ LLM: {status}{status_detail} | "
-        f"temp: {config.llm_temperature} | Retriever: {retriever_status} | top-k: {ui_top_k} | "
-        f"PDF dir: {config.pdf_dir}"
+        f"Embedding: {config.embedding_model} | LLM: {status}{status_detail} | "
+        f"Temperature: {config.llm_temperature} | Truy xuất: {retriever_status} | Top-k: {ui_top_k} | "
+        f"Thư mục PDF: {config.pdf_dir}"
     )
 
     for message in st.session_state["chat_messages"]:
@@ -645,7 +685,7 @@ def render_logs(db: DatabaseManager, user: Dict[str, Any], admin_mode: bool) -> 
 
 def main() -> None:
     load_dotenv()
-    st.set_page_config(page_title="RAG Demo SGU", page_icon=":books:", layout="wide")
+    st.set_page_config(page_title="Hỏi đáp Tài liệu SGU", page_icon=":books:", layout="wide")
 
     config = RAGConfig.from_env(base_dir=BASE_DIR)
     db = get_database_manager(config.db_path)
@@ -660,10 +700,17 @@ def main() -> None:
         return
 
     user = st.session_state["user"]
-    rag = get_rag_service(config)
-    # Start retriever warm-up after login so first query is faster.
-    rag.start_preload()
-    menu = render_sidebar(user)
+
+    # Nếu vừa rebuild index, sử dụng RAGService mới; nếu không, lazy-load.
+    rebuilt_rag = st.session_state.pop("_rebuilt_rag", None)
+    if rebuilt_rag is not None:
+        rag = rebuilt_rag
+    else:
+        rag = get_rag_service(config)
+        # Start retriever warm-up after login so first query is faster.
+        rag.start_preload()
+
+    menu = render_sidebar(user, config)
 
     if st.session_state.get("rag_reloaded_notice"):
         st.success("Đã nạp lại RAG index theo dữ liệu mới nhất.")

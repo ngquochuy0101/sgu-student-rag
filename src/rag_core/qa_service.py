@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import threading
 import unicodedata
@@ -125,8 +126,6 @@ class RAGService:
             self._preload_thread.start()
 
     def _init_llm_if_available(self) -> None:
-        import os
-
         api_key = os.getenv("GOOGLE_API_KEY", "").strip()
         if not api_key or api_key == "YOUR_API_KEY_HERE":
             self.llm = None
@@ -279,8 +278,8 @@ class RAGService:
         if exc is not None and self._is_quota_or_rate_limit_error(exc):
             self.llm = None
             self.llm_unavailable_reason = "Gemini vượt giới hạn truy cập (quota/rate limit)"
-
-        if exc is not None and not self._is_quota_or_rate_limit_error(exc):
+            reason = self.llm_unavailable_reason
+        elif exc is not None:
             reason = f"Gemini tạm thời không khả dụng ({type(exc).__name__})"
         else:
             reason = self.llm_unavailable_reason or "LLM không khả dụng"

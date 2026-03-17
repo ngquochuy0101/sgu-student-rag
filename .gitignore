@@ -80,3 +80,10 @@ sentence-transformers/
 *.pem
 secrets.json
 credentials.json
+
+# Gemini Agent
+.gemini/
+.agents/
+.agent/
+_agents/
+_agent/

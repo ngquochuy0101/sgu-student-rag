@@ -13,14 +13,10 @@ $env:USE_TF = "0"
 $env:TRANSFORMERS_NO_TF = "1"
 
 $venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
-$defaultPython = "C:\Program Files\Python310\python.exe"
 
 $pythonCandidates = @()
 if (Test-Path $venvPython) {
     $pythonCandidates += $venvPython
-}
-if (Test-Path $defaultPython) {
-    $pythonCandidates += $defaultPython
 }
 $pythonCandidates += "python"
 

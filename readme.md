@@ -1,69 +1,54 @@
-# RAG SGU - PyPDFLoader Minimal
+# 📚 RAG SGU — Hệ thống Hỏi đáp Tài liệu SGU
 
-He thong RAG toi gian cho tai lieu SGU voi 2 entrypoint:
-- Notebook: `rag_system.ipynb`
-- Web app: `streamlit_app.py`
+Hệ thống **Retrieval-Augmented Generation (RAG)** cho tài liệu Đại học Sài Gòn, sử dụng **LangChain**, **FAISS**, **Sentence-Transformers** và **Gemini API**.
 
-Pipeline core dung `DirectoryLoader + PyPDFLoader` de ingest PDF co text-layer.
+> Hỗ trợ 2 cách sử dụng: **Notebook** (nghiên cứu/debug) và **Web App** (Streamlit — đăng nhập, chat, quản lý user).
 
-## Muc tieu hien tai
+---
 
-- Dung chung mot code core cho notebook va web
-- Cau hinh mac dinh dong bo de web tra loi sat voi notebook
-- Hien thi nguon tham khao ro rang (file + trang)
-- Fallback out-of-scope/not-found theo cau chuan:
-	- `Toi khong tim thay thong tin nay trong tai lieu`
+## ✨ Tính năng chính
 
-## Kien truc
+- 🔍 Truy xuất tài liệu PDF với FAISS vector search
+- 🤖 Trả lời câu hỏi bằng Gemini LLM kết hợp ngữ cảnh truy xuất
+- 🌐 Giao diện web Streamlit với hệ thống đăng nhập (MSSV + ngày sinh)
+- 👤 Quản lý người dùng (admin/user) và nhật ký chat
+- 📄 Hiển thị nguồn tham khảo (file + trang) cho mỗi câu trả lời
 
-Code core nam trong `src/rag_core`:
-- `environment.py`: runtime env setup cho Windows
-- `config.py`: dataclass cau hinh tap trung
-- `ingestion.py`: ingest PDF bang `DirectoryLoader + PyPDFLoader`
-- `chunking.py`: chunk tai lieu bang `RecursiveCharacterTextSplitter`
-- `vector_store.py`: build/load/save FAISS
-- `qa_service.py`: QA service (Gemini + retrieval + source labels)
-- `pipeline.py`: orchestration class cho notebook/script
+---
 
-`streamlit_app.py` la UI (dang nhap, chat, quan ly user, chat logs) va goi `RAGService` tu core package.
+## 📂 Cấu trúc dự án
 
-## Cau truc thu muc
-
-```text
+```
 .
-├── .env.example
+├── .env.example            # Mẫu biến môi trường
 ├── readme.md
 ├── requirements.txt
-├── run_web.cmd
-├── run_web.ps1
-├── rag_system.ipynb
-├── test_api.ipynb
-├── streamlit_app.py
+├── run_web.cmd              # Khởi chạy web app (CMD)
+├── run_web.ps1              # Khởi chạy web app (PowerShell)
+├── rag_system.ipynb         # Notebook chạy pipeline RAG
+├── streamlit_app.py         # Web app chính
 ├── src/
 │   └── rag_core/
 │       ├── __init__.py
-│       ├── chunking.py
-│       ├── config.py
-│       ├── environment.py
-│       ├── ingestion.py
-│       ├── pipeline.py
-│       ├── qa_service.py
-│       └── vector_store.py
-├── File_PDFs/
-├── File_PDFs_OCR/
-├── vector_store/
-├── artifacts/
-│   ├── cache/
-│   ├── evaluations/
-│   └── logs/
-└── eval_data/
+│       ├── config.py        # Cấu hình tập trung (dataclass)
+│       ├── environment.py   # Setup runtime Windows
+│       ├── ingestion.py     # Ingest PDF (PyPDFLoader)
+│       ├── chunking.py      # Chia nhỏ tài liệu
+│       ├── vector_store.py  # Build/Load/Save FAISS index
+│       ├── qa_service.py    # QA service (Gemini + retrieval)
+│       └── pipeline.py      # Orchestration cho notebook
+├── File_PDFs/               # PDF gốc
+├── File_PDFs_OCR/           # PDF đã OCR (dùng cho pipeline)
+├── vector_store/            # FAISS index (tự động tạo)
+├── artifacts/               # DB, cache, logs runtime
+└── eval_data/               # Dữ liệu đánh giá
 ```
 
-Luu y:
-- `File_PDFs` co the la scan/image-only.
-- `File_PDFs_OCR` dung de dong bo ket qua voi notebook.
+---
 
-## Cai dat
+## 🚀 Cài đặt
+
+### 1. Tạo môi trường ảo và cài dependencies
 
 ```bash
 python -m venv .venv
@@ -71,84 +56,88 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Tao `.env` tu `.env.example` va set API key:
+### 2. Cấu hình biến môi trường
 
-```env
-GOOGLE_API_KEY=your_key_here
-```
-
-## Bo tham so mac dinh dong bo notebook
-
-Cac gia tri duoi day duoc dung trong code va `.env.example`:
-- `RAG_PDF_DIR=File_PDFs_OCR`
-- `RAG_PDF_GLOB=*.pdf`
-- `RAG_VECTOR_STORE_DIR=vector_store`
-- `RAG_DEMO_DB_PATH=artifacts/rag_demo.db`
-- `CHUNK_SIZE=1600`
-- `CHUNK_OVERLAP=200`
-- `RETRIEVAL_K=4`
-- `EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-mpnet-base-v2`
-- `EMBEDDING_DEVICE=cpu`
-- `LLM_MODEL=gemini-2.5-flash`
-- `LLM_TEMPERATURE=0.5`
-- `LLM_MAX_TOKENS=1024`
-- `LLM_API_TRANSPORT=rest`
-
-## Chay notebook
-
-Mo `rag_system.ipynb` va chay theo thu tu cell:
-1. Setup path + env
-2. Khoi tao `RAGConfig` va `RAGPipeline`
-3. Build index tu PDF (neu co text-layer)
-4. Neu build that bai, load index da ton tai
-5. Query in-scope
-6. Query out-of-scope de check fallback
-
-Notebook hien them top retrieved passages de debug retrieval.
-
-## Chay web app
-
-Lua chon 1:
+Sao chép `.env.example` thành `.env` và điền API key:
 
 ```bash
+cp .env.example .env
+```
+
+```env
+GOOGLE_API_KEY=your_api_key_here
+```
+
+### 3. Chuẩn bị dữ liệu PDF
+
+Đặt file PDF vào thư mục `File_PDFs_OCR/` (PDF cần có text layer, hoặc đã qua OCR).
+
+---
+
+## ▶️ Chạy ứng dụng
+
+### Cách 1 — Double-click (đơn giản nhất)
+
+```
 run_web.cmd
 ```
 
-Lua chon 2:
+### Cách 2 — PowerShell
 
-```bash
+```powershell
 powershell -ExecutionPolicy Bypass -File .\run_web.ps1
 ```
 
-Lua chon 3:
+### Cách 3 — Chạy trực tiếp
 
 ```bash
-streamlit run streamlit_app.py
+python -m streamlit run streamlit_app.py
 ```
 
-## Tham so giao dien tren web
+> Web app mặc định chạy tại **http://localhost:8501**
 
-Trang chat co cac tham so UI trong sidebar:
-- `Top-k truy xuat`
-- `Hien thi top doan truy xuat`
-- `So doan hien thi`
-- `So ky tu moi doan`
+---
 
-Mac dinh duoc dat de gan voi notebook (top-k theo config, passage preview 5 doan, 180 ky tu/doan).
+## 📓 Chạy Notebook
 
-Nut `Nap lai RAG index` tren sidebar se clear cache service va nap lai index/config moi nhat.
+Mở `rag_system.ipynb` và chạy theo thứ tự cell:
 
-## Hanh vi voi PDF scan/image-only
+1. Setup path + environment
+2. Khởi tạo `RAGConfig` và `RAGPipeline`
+3. Build FAISS index từ PDF
+4. Query câu hỏi và xem kết quả
 
-Voi pipeline hien tai (khong OCR), neu PDF khong co text-layer:
-- Ingestion bao ro file nghi van scan/image-only
-- Khong crash ung dung
-- Co the fallback sang FAISS index da build truoc do
+---
 
-## Verification checklist
+## ⚙️ Cấu hình
 
-- Notebook build/load index thanh cong
-- Streamlit login/chat/logs hoat dong
-- Query in-scope tra loi day du + co sources
-- Query out-of-scope tra fallback dung cau chuan
-- UI va config web hien dung thong so dang dung
+Các tham số chính (đặt trong `.env` hoặc dùng giá trị mặc định):
+
+| Tham số | Mặc định | Mô tả |
+|---|---|---|
+| `RAG_PDF_DIR` | `File_PDFs_OCR` | Thư mục chứa PDF |
+| `CHUNK_SIZE` | `1600` | Kích thước chunk |
+| `CHUNK_OVERLAP` | `200` | Overlap giữa các chunk |
+| `RETRIEVAL_K` | `4` | Số document truy xuất |
+| `EMBEDDING_MODEL` | `paraphrase-multilingual-mpnet-base-v2` | Model embedding |
+| `LLM_MODEL` | `gemini-2.5-flash` | Model LLM |
+| `LLM_TEMPERATURE` | `0.5` | Nhiệt độ sinh câu trả lời |
+
+---
+
+## 🔐 Đăng nhập
+
+- Đăng nhập bằng **MSSV** + **Ngày sinh** (dd/mm/yyyy)
+- Tài khoản admin mặc định: `admin` / `01/01/2000`
+- Có thể thay đổi qua biến `RAG_ADMIN_MSSV` và `RAG_ADMIN_BIRTH_DATE` trong `.env`
+
+---
+
+## 🛠️ Tech Stack
+
+- **LangChain** — Orchestration RAG pipeline
+- **FAISS** — Vector similarity search
+- **Sentence-Transformers** — Multilingual embeddings
+- **Google Gemini** — LLM sinh câu trả lời
+- **Streamlit** — Web UI
+- **SQLite** — Lưu trữ user và chat logs

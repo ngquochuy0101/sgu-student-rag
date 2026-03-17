@@ -48,7 +48,6 @@ class RAGConfig:
             ),
             pdf_glob_pattern=os.getenv("RAG_PDF_GLOB", "*.pdf"),
             chunk_size=int(os.getenv("CHUNK_SIZE", "1600")),
-            
             chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "200")),
             separators=("\n\n", "\n", ". ", " ", ""),
             embedding_model=os.getenv(

@@ -15,5 +15,12 @@ langchain-google-genai==2.1.12
 pypdf==4.2.0
 sentence-transformers>=2.6.0,<6.0.0
 faiss-cpu>=1.12.0,<1.14.0
-numpy<2
 protobuf==3.20.3
+
+# OCR preprocessing
+opencv-python>=4.8.0
+PyMuPDF>=1.24.0
+pytesseract>=0.3.10
+
+# LLM post-correction (optional)
+google-genai>=1.0.0
