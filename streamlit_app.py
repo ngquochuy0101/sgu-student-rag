@@ -2,54 +2,26 @@ import hashlib
 import hmac
 import json
 import os
-import re
 import sqlite3
-import threading
-import unicodedata
-from dataclasses import dataclass
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Keep transformers on the PyTorch code path to avoid TensorFlow/protobuf issues on Windows.
-os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
-os.environ.setdefault("USE_TF", "0")
-os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
-os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
-os.environ.setdefault("GLOG_minloglevel", "2")
-
 import streamlit as st
 from dotenv import load_dotenv
-try:
-    from langchain_huggingface import HuggingFaceEmbeddings
-except ImportError:
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain_google_genai import ChatGoogleGenerativeAI
 
+BASE_DIR = Path(__file__).resolve().parent
+SRC_DIR = BASE_DIR / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
-SYSTEM_PROMPT = """Bạn là trợ lý AI chuyên nghiệp, chuyên gia về tài liệu đào tạo.
+from rag_core.config import RAGConfig
+from rag_core.environment import configure_runtime_environment
 
-NHIỆM VỤ: Trả lời câu hỏi của người dùng dựa trên thông tin từ tài liệu được cung cấp.
+configure_runtime_environment()
 
-THÔNG TIN TỪ TÀI LIỆU:
-{context}
-
-CÂU HỎI: {question}
-
-YÊU CẦU:
-1. Trả lời chính xác, dựa hoàn toàn vào thông tin được cung cấp
-2. Trả lời ngắn gọn, rõ ràng bằng tiếng Việt
-3. Nếu không tìm thấy thông tin, hãy trả lời: "Tôi không tìm thấy thông tin này trong tài liệu"
-4. Không bịa đặt thông tin không có trong tài liệu
-5. Sử dụng bullet points nếu cần liệt kê
-6. Nếu câu hỏi không liên quan đến tài liệu, trả lời: "Câu hỏi này không liên quan đến tài liệu đã cho"
-
-TRẢ LỜI:
-"""
-
-NOT_FOUND_FALLBACK = "Tôi không tìm thấy thông tin này trong tài liệu"
+from rag_core.qa_service import RAGService
 
 BIRTH_DATE_FORMAT = "%d/%m/%Y"
 PASSWORD_HASH_ITERATIONS = 120_000
@@ -75,53 +47,6 @@ DEFAULT_ADMIN_BIRTH_DATE = "01/01/2000"
 
 CHAT_LOG_MIN_LIMIT = 1
 CHAT_LOG_MAX_LIMIT = 500
-
-
-def _resolve_path(value: str, base_dir: Path) -> Path:
-    raw_path = Path(value)
-    if raw_path.is_absolute():
-        return raw_path
-    return (base_dir / raw_path).resolve()
-
-
-@dataclass(frozen=True)
-class AppConfig:
-    base_dir: Path
-    vector_store_dir: Path
-    db_path: Path
-    embedding_model: str
-    embedding_device: str
-    llm_model: str
-    llm_temperature: float
-    llm_max_tokens: int
-    llm_api_transport: str
-    retrieval_k: int
-
-    @staticmethod
-    def from_env() -> "AppConfig":
-        base_dir = Path(__file__).resolve().parent
-        vector_store_dir = _resolve_path(
-            os.getenv("RAG_VECTOR_STORE_DIR", "vector_store"), base_dir
-        )
-        db_path = _resolve_path(
-            os.getenv("RAG_DEMO_DB_PATH", "artifacts/rag_demo.db"), base_dir
-        )
-
-        return AppConfig(
-            base_dir=base_dir,
-            vector_store_dir=vector_store_dir,
-            db_path=db_path,
-            embedding_model=os.getenv(
-                "EMBEDDING_MODEL",
-                "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-            ),
-            embedding_device=os.getenv("EMBEDDING_DEVICE", "cpu"),
-            llm_model=os.getenv("LLM_MODEL", "gemini-2.5-flash"),
-            llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.2")),
-            llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
-            llm_api_transport=os.getenv("LLM_API_TRANSPORT", "rest"),
-            retrieval_k=int(os.getenv("RETRIEVAL_K", "6")),
-        )
 
 
 def hash_password(password: str) -> str:
@@ -421,335 +346,13 @@ class DatabaseManager:
         return logs
 
 
-class RAGService:
-    def __init__(self, config: AppConfig):
-        self.config = config
-        self.embeddings = None
-        self.vector_store = None
-        self.llm = None
-        self.llm_unavailable_reason = ""
-        self._retriever_ready = False
-        self._retriever_lock = threading.Lock()
-        self._preload_started = False
-        self._preload_error = ""
-        self._preload_thread: Optional[threading.Thread] = None
-        self._init_llm_if_available()
-
-    @property
-    def retriever_ready(self) -> bool:
-        return self._retriever_ready
-
-    @property
-    def retriever_status(self) -> str:
-        if self._retriever_ready:
-            return "Đã nạp index"
-        if self._preload_started:
-            return "Đang preload nền..."
-        if self._preload_error:
-            return "Preload lỗi, sẽ lazy-load khi hỏi"
-        return "Lazy-load (nạp ở câu hỏi đầu tiên)"
-
-    @property
-    def retriever_last_error(self) -> str:
-        return self._preload_error
-
-    def _ensure_retriever_ready(self) -> None:
-        if self._retriever_ready:
-            return
-
-        with self._retriever_lock:
-            if self._retriever_ready:
-                return
-
-            self._init_embeddings()
-            self._load_vector_store()
-            self._retriever_ready = True
-            self._preload_error = ""
-
-    def _preload_worker(self) -> None:
-        try:
-            self._ensure_retriever_ready()
-        except Exception as exc:
-            with self._retriever_lock:
-                self._preload_error = f"{type(exc).__name__}: {exc}"
-                self._preload_started = False
-            return
-
-        with self._retriever_lock:
-            self._preload_started = False
-
-    def start_preload(self) -> None:
-        if self._retriever_ready:
-            return
-
-        with self._retriever_lock:
-            if self._retriever_ready or self._preload_started:
-                return
-
-            self._preload_started = True
-            self._preload_error = ""
-            self._preload_thread = threading.Thread(
-                target=self._preload_worker,
-                name="rag-retriever-preload",
-                daemon=True,
-            )
-            self._preload_thread.start()
-
-    def _init_embeddings(self) -> None:
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name=self.config.embedding_model,
-            model_kwargs={"device": self.config.embedding_device},
-            encode_kwargs={"normalize_embeddings": True},
-        )
-
-    def _load_vector_store(self) -> None:
-        if not self.config.vector_store_dir.exists():
-            raise FileNotFoundError(
-                f"Không tìm thấy vector store: {self.config.vector_store_dir}. "
-                "Hãy tạo index trước khi mở web app."
-            )
-
-        self.vector_store = FAISS.load_local(
-            str(self.config.vector_store_dir),
-            self.embeddings,
-            allow_dangerous_deserialization=True,
-        )
-
-    def _init_llm_if_available(self) -> None:
-        api_key = os.getenv("GOOGLE_API_KEY", "").strip()
-        if not api_key or api_key == "YOUR_API_KEY_HERE":
-            self.llm = None
-            self.llm_unavailable_reason = "Chưa cấu hình GOOGLE_API_KEY"
-            return
-
-        self.llm = ChatGoogleGenerativeAI(
-            model=self.config.llm_model,
-            google_api_key=api_key,
-            temperature=self.config.llm_temperature,
-            max_output_tokens=self.config.llm_max_tokens,
-            api_transport=self.config.llm_api_transport,
-            retries=1,
-            convert_system_message_to_human=True,
-        )
-        self.llm_unavailable_reason = ""
-
-    @staticmethod
-    def _is_quota_or_rate_limit_error(exc: Exception) -> bool:
-        text = f"{type(exc).__name__}: {exc}".casefold()
-        markers = [
-            "toomanyrequests",
-            "resourceexhausted",
-            "rate limit",
-            "quota",
-            "429",
-        ]
-        return any(marker in text for marker in markers)
-
-    @staticmethod
-    def _normalize_text(text: str) -> str:
-        lowered = text.casefold()
-        without_marks = "".join(
-            ch for ch in unicodedata.normalize("NFD", lowered) if unicodedata.category(ch) != "Mn"
-        )
-        return re.sub(r"[^a-z0-9]+", " ", without_marks).strip()
-
-    def _is_not_found_answer(self, answer: str) -> bool:
-        return self._normalize_text(answer) == self._normalize_text(NOT_FOUND_FALLBACK)
-
-    @staticmethod
-    def _build_mmr_search_kwargs(k: int) -> Dict[str, Any]:
-        fetch_k = max(k * 4, k + 8)
-        return {
-            "k": k,
-            "fetch_k": fetch_k,
-            "lambda_mult": 0.7,
-        }
-
-    def _retrieve_docs(self, question: str, k: int) -> List[Any]:
-        return self.vector_store.max_marginal_relevance_search(
-            question,
-            **self._build_mmr_search_kwargs(k),
-        )
-
-    @staticmethod
-    def _short_source_name(source: str) -> str:
-        raw = Path(str(source).strip()).name
-        if not raw:
-            return "Tài liệu"
-
-        cleaned = raw
-        copy_prefixes = ("Bản sao của ", "Ban sao cua ")
-        changed = True
-        while changed:
-            changed = False
-            for prefix in copy_prefixes:
-                if cleaned.casefold().startswith(prefix.casefold()):
-                    cleaned = cleaned[len(prefix):].strip()
-                    changed = True
-                    break
-
-        return cleaned or raw
-
-    @staticmethod
-    def _coerce_page_number(metadata: Dict[str, Any]) -> Optional[int]:
-        if metadata.get("page_number") is not None:
-            raw_page = metadata.get("page_number")
-            offset = 0
-        elif metadata.get("page") is not None:
-            raw_page = metadata.get("page")
-            offset = 1
-        else:
-            return None
-
-        try:
-            return int(raw_page) + offset
-        except (TypeError, ValueError):
-            return None
-
-    @staticmethod
-    def _extract_source_label(doc: Any, idx: int) -> str:
-        metadata = getattr(doc, "metadata", {}) or {}
-        source_keys = ["source", "source_relpath", "source_path", "file_name", "document", "doc_id"]
-        source = ""
-        for key in source_keys:
-            value = metadata.get(key)
-            if value is not None and str(value).strip():
-                source = str(value).strip()
-                break
-
-        source_name = RAGService._short_source_name(source) if source else f"Tài liệu {idx}"
-        page = RAGService._coerce_page_number(metadata)
-        if page is not None:
-            return f"{source_name} - trang {page}"
-        return source_name
-
-    @staticmethod
-    def _dedupe_sources(labels: List[str]) -> List[str]:
-        seen = set()
-        unique: List[str] = []
-        for label in labels:
-            key = label.strip()
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            unique.append(label)
-        return unique
-
-    @staticmethod
-    def _build_fallback_snippets(docs: List[Any], max_items: int = 3) -> List[str]:
-        snippets: List[str] = []
-        for idx, doc in enumerate(docs[:max_items], start=1):
-            content = str(getattr(doc, "page_content", "")).replace(chr(10), " ").strip()
-            if not content:
-                continue
-
-            source_label = RAGService._extract_source_label(doc, idx)
-            short_content = content[:220].rstrip()
-            if len(content) > 220:
-                short_content += "..."
-
-            snippets.append(f"- **{source_label}**: {short_content}")
-        return snippets
-
-    @staticmethod
-    def _build_context(docs: List[Any]) -> str:
-        return "\n\n".join(
-            [
-                f"[Tài liệu {idx + 1}]\n{doc.page_content}"
-                for idx, doc in enumerate(docs)
-                if getattr(doc, "page_content", "").strip()
-            ]
-        )
-
-    def _build_retrieval_only_answer(
-        self,
-        docs: List[Any],
-        exc: Optional[Exception] = None,
-    ) -> str:
-        if exc is not None and self._is_quota_or_rate_limit_error(exc):
-            self.llm = None
-            self.llm_unavailable_reason = "Gemini vượt giới hạn truy cập (quota/rate limit)"
-
-        if exc is not None and not self._is_quota_or_rate_limit_error(exc):
-            reason = f"Gemini tạm thời không khả dụng ({type(exc).__name__})"
-        else:
-            reason = self.llm_unavailable_reason or "LLM không khả dụng"
-
-        mode_text = (
-            "hệ thống chuyển sang chế độ chỉ truy xuất."
-            if exc is not None
-            else "hệ thống đang ở chế độ chỉ truy xuất."
-        )
-
-        fallback_snippets = self._build_fallback_snippets(docs)
-        lines = [
-            f"{reason}, {mode_text}",
-            "Thông tin liên quan nhất (kèm nguồn):",
-        ]
-        if fallback_snippets:
-            lines.extend(fallback_snippets)
-        else:
-            lines.append("- Không có đoạn nội dung phù hợp để hiển thị.")
-        return "\n".join(lines)
-
-    def _generate_answer(self, question: str, docs: List[Any]) -> str:
-        context = self._build_context(docs)
-        prompt = SYSTEM_PROMPT.format(context=context, question=question)
-        response = self.llm.invoke(prompt)
-        answer = str(getattr(response, "content", response)).strip()
-        if not answer:
-            return NOT_FOUND_FALLBACK
-        return answer
-
-    def query(self, question: str, top_k: Optional[int] = None) -> Dict[str, Any]:
-        self._ensure_retriever_ready()
-
-        k = int(top_k or self.config.retrieval_k)
-        docs = self._retrieve_docs(question, k=k)
-
-        if not docs:
-            return {
-                "answer": NOT_FOUND_FALLBACK,
-                "sources": [],
-                "docs": [],
-            }
-
-        sources = self._dedupe_sources(
-            [self._extract_source_label(doc, idx + 1) for idx, doc in enumerate(docs)]
-        )
-
-        if self.llm is None:
-            answer = self._build_retrieval_only_answer(docs)
-            return {"answer": answer, "sources": sources, "docs": docs}
-
-        try:
-            answer = self._generate_answer(question, docs)
-
-            # Match notebook behavior: retry once with broader retrieval when fallback is returned.
-            if self._is_not_found_answer(answer) and docs:
-                retry_k = max(self.config.retrieval_k + 3, 8)
-                retry_docs = self._retrieve_docs(question, k=retry_k)
-
-                if retry_docs:
-                    retry_answer = self._generate_answer(question, retry_docs)
-                    if retry_answer and not self._is_not_found_answer(retry_answer):
-                        docs = retry_docs
-                        sources = self._dedupe_sources(
-                            [self._extract_source_label(doc, idx + 1) for idx, doc in enumerate(docs)]
-                        )
-                        answer = retry_answer
-        except Exception as exc:
-            answer = self._build_retrieval_only_answer(docs, exc=exc)
-        return {"answer": answer, "sources": sources, "docs": docs}
-
-
 @st.cache_resource(show_spinner=False)
 def get_database_manager(db_path: Path) -> DatabaseManager:
     return DatabaseManager(db_path)
 
 
 @st.cache_resource(show_spinner=False)
-def get_rag_service(config: AppConfig) -> RAGService:
+def get_rag_service(config: RAGConfig) -> RAGService:
     return RAGService(config)
 
 
@@ -770,9 +373,13 @@ def render_login(db: DatabaseManager) -> None:
     st.caption("Đăng nhập để sử dụng hệ thống hỏi đáp tài liệu SGU")
 
     with st.form("login_form"):
-        mssv = st.text_input("MSSV")
-        birth_date = st.text_input("Ngày sinh (dd/mm/yyyy)", placeholder="Ví dụ: 02/09/2004")
-        submitted = st.form_submit_button("Đăng nhập")
+        mssv = st.text_input("MSSV", key="login_mssv")
+        birth_date = st.text_input(
+            "Ngày sinh (dd/mm/yyyy)",
+            placeholder="Ví dụ: 02/09/2004",
+            key="login_birth_date",
+        )
+        submitted = st.form_submit_button("Đăng nhập", key="login_submit")
 
     if submitted:
         user = db.authenticate(mssv, birth_date)
@@ -799,16 +406,16 @@ def render_sidebar(user: Dict[str, Any]) -> str:
     st.sidebar.write(f"Họ tên: {user['full_name']}")
     st.sidebar.write(f"Vai trò: {current_role_label}")
 
-    if st.sidebar.button("Đăng xuất"):
+    if st.sidebar.button("Đăng xuất", key="sidebar_logout"):
         logout()
         st.rerun()
 
     if user["role"] == ROLE_ADMIN:
-        return st.sidebar.radio("Menu", ADMIN_MENU_OPTIONS, index=0)
-    return st.sidebar.radio("Menu", USER_MENU_OPTIONS, index=0)
+        return st.sidebar.radio("Menu", ADMIN_MENU_OPTIONS, index=0, key="sidebar_menu")
+    return st.sidebar.radio("Menu", USER_MENU_OPTIONS, index=0, key="sidebar_menu")
 
 
-def render_chat_page(db: DatabaseManager, rag: RAGService, user: Dict[str, Any], config: AppConfig) -> None:
+def render_chat_page(db: DatabaseManager, rag: RAGService, user: Dict[str, Any], config: RAGConfig) -> None:
     st.title("RAG Chat Demo")
     status = "Có Gemini" if rag.llm is not None else "Chỉ truy xuất"
     status_detail = f" ({rag.llm_unavailable_reason})" if rag.llm is None and rag.llm_unavailable_reason else ""
@@ -826,7 +433,7 @@ def render_chat_page(db: DatabaseManager, rag: RAGService, user: Dict[str, Any],
                 with st.expander("Nguồn tham khảo"):
                     write_sources(message["sources"])
 
-    question = st.chat_input("Nhập câu hỏi về tài liệu...")
+    question = st.chat_input("Nhập câu hỏi về tài liệu...", key="chat_question_input")
     if not question:
         return
 
@@ -860,11 +467,20 @@ def render_user_management(db: DatabaseManager, user: Dict[str, Any]) -> None:
         with st.form("create_user_form"):
             role_options = {"Người dùng": ROLE_USER, "Quản trị viên": ROLE_ADMIN}
 
-            new_mssv = st.text_input("MSSV mới")
-            new_name = st.text_input("Họ tên")
-            new_birth_date = st.text_input("Ngày sinh (dd/mm/yyyy)", placeholder="Ví dụ: 02/09/2004")
-            new_role_label = st.selectbox("Vai trò", list(role_options.keys()), index=0)
-            create_submitted = st.form_submit_button("Tạo tài khoản")
+            new_mssv = st.text_input("MSSV mới", key="create_user_mssv")
+            new_name = st.text_input("Họ tên", key="create_user_name")
+            new_birth_date = st.text_input(
+                "Ngày sinh (dd/mm/yyyy)",
+                placeholder="Ví dụ: 02/09/2004",
+                key="create_user_birth_date",
+            )
+            new_role_label = st.selectbox(
+                "Vai trò",
+                list(role_options.keys()),
+                index=0,
+                key="create_user_role",
+            )
+            create_submitted = st.form_submit_button("Tạo tài khoản", key="create_user_submit")
 
         if create_submitted:
             outcome = db.create_user(
@@ -903,8 +519,8 @@ def render_user_management(db: DatabaseManager, user: Dict[str, Any]) -> None:
             st.warning("Không có tài khoản nào để xóa.")
             return
 
-        target = st.selectbox("Chọn MSSV cần xóa", all_mssv)
-        if st.button("Xác nhận xóa", type="primary"):
+        target = st.selectbox("Chọn MSSV cần xóa", all_mssv, key="delete_user_target")
+        if st.button("Xác nhận xóa", type="primary", key="delete_user_submit"):
             outcome = db.delete_user(target, actor_mssv=user["mssv"])
             if outcome["status"] == "ok":
                 st.success(outcome["message"])
@@ -915,7 +531,14 @@ def render_user_management(db: DatabaseManager, user: Dict[str, Any]) -> None:
 
 def render_logs(db: DatabaseManager, user: Dict[str, Any], admin_mode: bool) -> None:
     st.title("Nhật ký hỏi đáp")
-    limit = st.slider("Số bản ghi", min_value=10, max_value=200, value=50, step=10)
+    limit = st.slider(
+        "Số bản ghi",
+        min_value=10,
+        max_value=200,
+        value=50,
+        step=10,
+        key="chat_logs_limit",
+    )
 
     mssv_filter = None if admin_mode else user["mssv"]
     logs = db.get_chat_logs(limit=limit, mssv=mssv_filter)
@@ -940,7 +563,7 @@ def main() -> None:
     load_dotenv()
     st.set_page_config(page_title="RAG Demo SGU", page_icon=":books:", layout="wide")
 
-    config = AppConfig.from_env()
+    config = RAGConfig.from_env(base_dir=BASE_DIR)
     db = get_database_manager(config.db_path)
 
     admin_mssv, admin_birth_date = get_admin_credentials()

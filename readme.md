@@ -1,241 +1,111 @@
-# SGU Student RAG MLOps
+# RAG SGU - PyPDFLoader Minimal
 
-Production-ready Retrieval-Augmented Generation (RAG) system for SGU student documents.
-The project supports OCR-based PDF ingestion, FAISS indexing, Gemini-based QA, and retrieval evaluation.
+He thong RAG toi gian cho tai lieu SGU voi 2 entrypoint:
+- Notebook: `rag_system.ipynb`
+- Web app: `streamlit_app.py`
 
-## Key Capabilities
+Pipeline chi dung `DirectoryLoader + PyPDFLoader` de ingest PDF co text-layer.
 
-- Hybrid ingestion: direct PDF text extraction with OCR fallback
-- Deterministic index lifecycle using dataset fingerprints
-- OCR cache to reduce repeated processing
-- Source-traceable chunks (`source`, `chunk_id`, `source_hash`)
-- CLI workflow for build, query, evaluate, and manifest inspection
-- Unit tests and CI for core MLOps behaviors
+## Scope hien tai
 
-## Architecture
+- Khong OCR
+- Khong CLI workflow
+- Retrieval co ban: `similarity_search` voi `k` co dinh
+- Tra loi kem nguon tham khao da dedupe va page label
+- Fallback not-found: `Toi khong tim thay thong tin nay trong tai lieu`
 
-1. Ingestion: scan PDFs in `File_PDFs/`
-2. Extraction: direct text first, OCR fallback for low-text pages
-3. Chunking: recursive splitting with overlap
-4. Embedding: sentence-transformers multilingual model
-5. Indexing: FAISS vector store in `vector_store/`
-6. Retrieval + QA: retrieve relevant chunks and generate answer
-7. Evaluation: run retrieval metrics from JSON evaluation datasets
+## Kien truc
 
-## Requirements
+Code core dung chung nam trong `src/rag_core`:
 
-- OS: Windows, Linux, or macOS
-- Python: 3.10 to 3.13 (3.10/3.11 recommended)
-- Tesseract OCR installed and available via `OCR/` folder or system path
+- `environment.py`: bien moi truong runtime cho Windows
+- `config.py`: dataclass cau hinh tap trung
+- `ingestion.py`: ingest PDF bang `DirectoryLoader + PyPDFLoader`
+- `chunking.py`: chunk tai lieu bang `RecursiveCharacterTextSplitter`
+- `vector_store.py`: build/load/save FAISS
+- `qa_service.py`: QA service (Gemini + retrieval + citation labels)
+- `pipeline.py`: class orchestration cho notebook/script
 
-## Installation
+`streamlit_app.py` giu UI dang nhap, quan ly user, va chat logs; phan RAG da import tu core package.
+
+## Cau truc thu muc
+
+```text
+.
+├── src/
+│   └── rag_core/
+├── rag_system.ipynb
+├── streamlit_app.py
+├── requirements.txt
+├── File_PDFs/
+├── vector_store/
+└── artifacts/
+```
+
+## Cai dat
 
 ```bash
-git clone <your-repo-url>
-cd sgu-student-rag-mlops
-
 python -m venv .venv
-# Windows
 .venv\Scripts\activate
-# Linux/macOS
-source .venv/bin/activate
-
 pip install -r requirements.txt
-pip install -e .
 ```
 
-## Configuration
-
-1. Copy environment template:
-
-```bash
-cp .env.example .env
-```
-
-2. Set required key in `.env`:
+Tao file `.env` tu `.env.example` va set API key:
 
 ```env
 GOOGLE_API_KEY=your_key_here
 ```
 
-3. Optional overrides:
+Luu y voi du lieu mau trong repo:
+- `File_PDFs` hien la scan/image-only, PyPDFLoader se can text-layer de rebuild index moi.
+- Co the set `RAG_PDF_DIR=File_PDFs_OCR` (PDF da OCR san) hoac su dung index co san trong `vector_store`.
 
-```env
-RAG_RUN_NAME=dev-local
-RAG_PDF_DIR=File_PDFs
-RAG_VECTOR_STORE_DIR=vector_store
-RAG_OCR_DIR=OCR
-RAG_ARTIFACTS_DIR=artifacts
-CHUNK_SIZE=1000
-CHUNK_OVERLAP=200
-RETRIEVAL_K=3
-OCR_LANGUAGES=vie+eng
-OCR_DPI=2
-OCR_PSM=3
-OCR_OEM=1
-OCR_PREPROCESSING_ENABLED=true
-OCR_ADAPTIVE_THRESHOLD=true
-OCR_DENOISE=true
-OCR_DESKEW=true
-OCR_VIETNAMESE_CORRECTION=true
-OCR_CORRECTION_AGGRESSIVE=false
-OCR_CONFIDENCE_THRESHOLD=0.60
-OCR_MIN_TEXT_CHARS=60
-OCR_CACHE_ENABLED=true
-OCR_MAX_RETRY_ATTEMPTS=2
-```
+## Bien moi truong chinh
 
-## CLI Usage
+- `RAG_PDF_DIR` (mac dinh: `File_PDFs`)
+- `RAG_PDF_GLOB` (mac dinh: `*.pdf`)
+- `RAG_VECTOR_STORE_DIR` (mac dinh: `vector_store`)
+- `RAG_DEMO_DB_PATH` (mac dinh: `artifacts/rag_demo.db`)
+- `CHUNK_SIZE` (mac dinh: `1000`)
+- `CHUNK_OVERLAP` (mac dinh: `200`)
+- `RETRIEVAL_K` (mac dinh: `6`)
+- `EMBEDDING_MODEL` (mac dinh: `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`)
+- `EMBEDDING_DEVICE` (mac dinh: `cpu`)
+- `LLM_MODEL` (mac dinh: `gemini-2.5-flash`)
+- `LLM_TEMPERATURE` (mac dinh: `0.2`)
+- `LLM_MAX_TOKENS` (mac dinh: `1024`)
+- `LLM_API_TRANSPORT` (mac dinh: `rest`)
 
-### 1) Build or refresh index
+## Chay notebook
 
-```bash
-rag-sgu build-index
-```
+Mo `rag_system.ipynb` va chay theo thu tu cell:
 
-- Rebuild is skipped automatically when dataset fingerprint is unchanged.
-- Use force rebuild:
+1. Setup path + env
+2. Khoi tao `RAGConfig` va `RAGPipeline`
+3. Build index tu PDF (neu co text-layer)
+4. Neu build that bai, load index da ton tai
+5. Query demo trong tai lieu
+6. Query out-of-scope de kiem tra fallback
 
-```bash
-rag-sgu build-index --force
-```
-
-### 2) Query the system
-
-```bash
-rag-sgu query --question "Muc tieu dao tao cua nganh CNTT la gi?"
-```
-
-### 3) Evaluate retrieval quality
-
-```bash
-rag-sgu evaluate --dataset eval_data/retrieval_eval_sample.json
-```
-
-### 4) Inspect manifest
-
-```bash
-rag-sgu show-manifest
-```
-
-Manifest is stored at `vector_store/manifest.json`.
-
-## Streamlit Web App
-
-Run the interactive QA web app:
+## Chay web app
 
 ```bash
 streamlit run streamlit_app.py
 ```
 
-What the web app includes:
+Web app yeu cau FAISS index da ton tai trong `vector_store/`.
 
-- Token-streaming chat response with TTFT metrics
-- Rich Markdown/LaTeX rendering and interactive citation panel with PDF page jump
-- Auto-suggestion (query expansion) based on indexed content
-- Semantic cache with cosine similarity threshold (default 0.95)
-: Optional Redis backend if `WEB_SEMANTIC_CACHE_REDIS_URL` is set
-- Feedback loop (like/dislike) and JSONL tracing for production observability
-- Runtime cache reload and chat history reset
+## Hanh vi voi PDF scan/image-only
 
-Web app runs in QA-only mode:
+Voi pipeline hien tai (khong OCR), neu PDF khong co text-layer:
 
-- No build-index/upload flow in UI
-- FAISS index must already exist before opening the app
-- Build/refresh index via CLI only (`rag-sgu build-index`)
+- Ingestion se bao ro file nghi van scan/image-only
+- Khong crash ung dung
+- Co the fallback sang load FAISS index da build truoc do
 
-Optional web deployment env vars:
+## Verification de xuat
 
-```env
-WEB_ALLOWED_EMAIL_DOMAINS=sgu.edu.vn
-WEB_RATE_LIMIT_REQUESTS=20
-WEB_RATE_LIMIT_WINDOW_SECONDS=60
-WEB_SEMANTIC_CACHE_THRESHOLD=0.95
-WEB_SEMANTIC_CACHE_MAX_ENTRIES=300
-WEB_SEMANTIC_CACHE_MAX_AGE_HOURS=72
-WEB_SEMANTIC_CACHE_REDIS_URL=
-WEB_SEMANTIC_CACHE_TTL_SECONDS=259200
-WEB_MEMORY_WINDOW=5
-LANGSMITH_API_KEY=
-PHOENIX_COLLECTOR_ENDPOINT=
-```
-
-## Evaluation Dataset Format
-
-Example row in evaluation JSON:
-
-```json
-{
-  "question": "Huong dan dang ky mon hoc hoc ky 252 nhu the nao?",
-  "expected_keywords": ["dang ky", "mon hoc", "hoc ky"],
-  "expected_sources": ["HK252_HD_DangKyMonHoc"]
-}
-```
-
-## Project Structure
-
-```text
-.
-├── src/
-│   └── rag_sgu/
-│       ├── cli.py
-│       ├── config.py
-│       ├── document_ingestion.py
-│       ├── text_chunking.py
-│       ├── vector_index.py
-│       ├── qa_service.py
-│       ├── evaluation.py
-│       ├── pipeline.py
-│       └── mlops.py
-├── tests/
-├── eval_data/
-├── docs/
-├── File_PDFs/
-├── OCR/
-├── vector_store/
-├── requirements.txt
-└── pyproject.toml
-```
-
-## Notebooks
-
-- `rag_system.ipynb`: legacy exploration notebook
-- `test_api.ipynb`: API/model listing test notebook
-
-CLI and `src/rag_sgu` modules are the recommended production path.
-
-## Run Tests
-
-```bash
-pytest
-```
-
-## CI
-
-GitHub Actions workflow is defined in `.github/workflows/ci.yml`.
-
-## Troubleshooting
-
-### `build-index` fails with OCR dependency errors
-
-Install full dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-### `show-manifest` says manifest not found
-
-Run index build first:
-
-```bash
-rag-sgu build-index
-```
-
-### Python 3.14 incompatibility
-
-Some pinned dependencies are not stable on 3.14 yet. Use Python 3.10 to 3.13.
-
-## License
-
-MIT License. See `LICENSE`.
+- Notebook build/load index thanh cong, query tra answer + sources
+- Streamlit login/chat/logs hoat dong
+- Query ngoai tai lieu tra fallback dung cau chuan
+- Khong con import/goi OCR libraries trong code path chinh
