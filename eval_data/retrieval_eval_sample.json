@@ -1,0 +1,17 @@
+[
+  {
+    "question": "Muc tieu dao tao cua nganh cong nghe thong tin la gi?",
+    "expected_keywords": ["muc tieu", "dao tao", "cong nghe thong tin"],
+    "expected_sources": ["BanMOTa_CNTT_2020-2024"]
+  },
+  {
+    "question": "Huong dan dang ky mon hoc hoc ky 252 nhu the nao?",
+    "expected_keywords": ["dang ky", "mon hoc", "hoc ky"],
+    "expected_sources": ["HK252_HD_DangKyMonHoc"]
+  },
+  {
+    "question": "Cam nang sinh vien co noi ve quy tac ung xu khong?",
+    "expected_keywords": ["quy tac", "ung xu", "sinh vien"],
+    "expected_sources": ["CAMNANGTSVSGU2022"]
+  }
+]

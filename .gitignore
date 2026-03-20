@@ -1,0 +1,89 @@
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project Specific
+# FAISS index and rebuild backups
+vector_store/
+vector_store_backup_*/
+
+# PDF files and OCR binaries
+File_PDFs/*.pdf
+File_PDFs_OCR/*.pdf
+OCR/tesseract.exe
+OCR/tessdata/*.traineddata
+
+# Temporary files
+*.tmp
+*.log
+*.cache
+.pytest_cache/
+
+# MLOps artifacts
+artifacts/
+
+# Model cache
+.cache/
+models/
+sentence-transformers/
+
+# Data files
+*.csv
+*.xlsx
+*.db
+*.sqlite
+
+# API Keys and Secrets
+*.key
+*.pem
+secrets.json
+credentials.json
+
+# Gemini Agent
+.gemini/
+.agents/
+.agent/
+_agents/
+_agent/
