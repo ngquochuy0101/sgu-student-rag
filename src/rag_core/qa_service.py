@@ -15,9 +15,9 @@ configure_runtime_environment()
 from .config import RAGConfig
 from .vector_store import VectorStoreManager
 
-SYSTEM_PROMPT = """Bạn là Chuyên viên tư vấn học vụ nhiệt tình, chuyên nghiệp của Đại học Sài Gòn (SGU).
+SYSTEM_PROMPT = """Bạn là trợ lý AI chuyên nghiệp, chuyên gia về tài liệu đào tạo.
 
-NHIỆM VỤ: Giải đáp các thắc mắc của sinh viên một cách rõ ràng, dễ hiểu và luôn tạo cảm giác được quan tâm.
+NHIỆM VỤ: Trả lời câu hỏi của người dùng dựa trên thông tin từ tài liệu được cung cấp.
     
 THÔNG TIN TỪ TÀI LIỆU:
 {context}
