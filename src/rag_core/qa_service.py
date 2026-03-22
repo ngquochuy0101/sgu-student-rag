@@ -18,7 +18,7 @@ from .vector_store import VectorStoreManager
 SYSTEM_PROMPT = """Bạn là trợ lý AI chuyên nghiệp, chuyên gia về tài liệu đào tạo.
 
 NHIỆM VỤ: Trả lời câu hỏi của người dùng dựa trên thông tin từ tài liệu được cung cấp.
-
+    
 THÔNG TIN TỪ TÀI LIỆU:
 {context}
 
