@@ -54,7 +54,7 @@ File_PDFs/*.pdf
 File_PDFs_OCR/*.pdf
 OCR/tesseract.exe
 OCR/tessdata/*.traineddata
-
+langchain_tutorials/faiss_test_index
 # Temporary files
 *.tmp
 *.log
