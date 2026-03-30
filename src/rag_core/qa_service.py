@@ -140,9 +140,11 @@ class RAGService:
                 google_api_key=api_key,
                 temperature=self.config.llm_temperature,
                 max_output_tokens=self.config.llm_max_tokens,
-                api_transport=self.config.llm_api_transport,
-                retries=1,
-                convert_system_message_to_human=True,
+                # model_kwargs={
+                #     "transport": self.config.llm_api_transport
+                # },
+                # retries=1,
+                # convert_system_message_to_human=True,
             )
             self.llm_unavailable_reason = ""
         except Exception as exc:

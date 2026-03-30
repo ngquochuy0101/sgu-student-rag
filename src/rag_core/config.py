@@ -26,8 +26,8 @@ class RAGConfig:
     embedding_model: str
     embedding_device: str
     llm_model: str
-    llm_temperature: float
-    llm_max_tokens: int
+    llm_temperature: float 
+    llm_max_tokens: int 
     llm_api_transport: str
     retrieval_k: int
 
@@ -47,8 +47,8 @@ class RAGConfig:
                 root_dir,
             ),
             pdf_glob_pattern=os.getenv("RAG_PDF_GLOB", "*.pdf"),
-            chunk_size=int(os.getenv("CHUNK_SIZE", "1600")),
-            chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "200")),
+            chunk_size=int(os.getenv("CHUNK_SIZE", "2000")),
+            chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "400")),
             separators=("\n\n", "\n", ". ", " ", ""),
             embedding_model=os.getenv(
                 "EMBEDDING_MODEL",
@@ -57,7 +57,7 @@ class RAGConfig:
             embedding_device=os.getenv("EMBEDDING_DEVICE", "cpu"),
             llm_model=os.getenv("LLM_MODEL", "gemini-2.5-flash"),
             llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.5")),
-            llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
+            llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "8192")),
             llm_api_transport=os.getenv("LLM_API_TRANSPORT", "rest"),
-            retrieval_k=int(os.getenv("RETRIEVAL_K", "4")),
+            retrieval_k=int(os.getenv("RETRIEVAL_K", "8")),
         )
