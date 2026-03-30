@@ -450,7 +450,7 @@ def render_login(db: DatabaseManager) -> None:
 
     admin_mssv, admin_birth_date = get_admin_credentials()
     st.info(
-        f"Tài khoản admin mặc định: mssv={admin_mssv}, ngày sinh={admin_birth_date}. "
+        # f"Tài khoản admin mặc định: mssv={admin_mssv}, ngày sinh={admin_birth_date}. "
         "Ngày sinh phải theo định dạng dd/mm/yyyy."
     )
 
