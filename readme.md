@@ -38,7 +38,7 @@ Hệ thống **Retrieval-Augmented Generation (RAG)** cho tài liệu Đại h�
 │       ├── vector_store.py  # Build/Load/Save FAISS index
 │       ├── qa_service.py    # QA service (Gemini + retrieval)
 │       └── pipeline.py      # Orchestration cho notebook
-├── File_PDFs/               # PDF gốc
+├── PDFs_demo/               # PDF gốc
 ├── File_PDFs_OCR/           # (tùy chọn) PDF đã OCR, dùng làm input mặc định
 ├── vector_store/            # FAISS index (tự động tạo)
 ├── artifacts/               # DB, cache, logs runtime
